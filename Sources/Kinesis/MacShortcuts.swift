@@ -7,6 +7,10 @@ protocol MacControls {
     var trusted: Bool { get }
     func requestAccess()
     func post(_ action: MacAction) throws
+    func postShortcut(_ shortcut: KeyboardShortcut) throws
+    func activateChatGPT(destination: ChatGPTDestination, chatLink: String) async throws -> Int32
+    var frontmostChatGPTProcessIdentifier: Int32? { get }
+    func postShortcut(_ shortcut: KeyboardShortcut, toApplication processIdentifier: Int32) throws
     /// Where the pointer is now, in global display points with y growing downward.
     var cursorLocation: CGPoint? { get }
     /// The size of the main display in points.
@@ -19,10 +23,29 @@ protocol MacControls {
     func mouseButton(_ button: CGMouseButton, down: Bool, clicks: Int, at point: CGPoint?) throws
 }
 
+extension MacControls {
+    func postShortcut(_ shortcut: KeyboardShortcut) throws {
+        throw KinesisError(message: "This control adapter does not support custom keyboard shortcuts")
+    }
+    func activateChatGPT(destination: ChatGPTDestination, chatLink: String) async throws -> Int32 {
+        throw KinesisError(message: "This control adapter cannot open ChatGPT")
+    }
+    var frontmostChatGPTProcessIdentifier: Int32? { nil }
+    func postShortcut(_ shortcut: KeyboardShortcut, toApplication processIdentifier: Int32) throws {
+        throw KinesisError(message: "This control adapter cannot send a shortcut to ChatGPT")
+    }
+}
+
 @MainActor
 struct MacShortcuts: MacControls {
     static let shortcutEventTag: Int64 = 0x4B494E45534953
     var trusted: Bool { CGPreflightPostEventAccess() }
+    var frontmostChatGPTProcessIdentifier: Int32? {
+        guard let application = NSWorkspace.shared.frontmostApplication,
+              !application.isTerminated, let url = application.bundleURL,
+              Self.validatedChatGPTApplicationURL(url) != nil else { return nil }
+        return application.processIdentifier
+    }
 
     func requestAccess() {
         _ = CGRequestPostEventAccess()
@@ -94,6 +117,46 @@ struct MacShortcuts: MacControls {
         let (down, up) = try Self.events(for: action)
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+    }
+
+    func postShortcut(_ shortcut: KeyboardShortcut) throws {
+        guard trusted else { throw KinesisError(message: "Allow Kinesis in Accessibility to use Mac controls.") }
+        let (down, up) = try Self.events(for: shortcut)
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
+    func postShortcut(_ shortcut: KeyboardShortcut, toApplication processIdentifier: Int32) throws {
+        guard trusted else { throw KinesisError(message: "Allow Kinesis in Accessibility to use Mac controls.") }
+        let (down, up) = try Self.events(for: shortcut)
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier else {
+            throw KinesisError(message: "ChatGPT lost focus before its shortcut could be sent. Try the gesture again.")
+        }
+        // ChatGPT registers Dictation as an OS-global hotkey. Process-only
+        // events bypass that listener, even after the correct app takes focus.
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
+    /// Sends the recorded chord to the current app without activating Kinesis.
+    static func events(for shortcut: KeyboardShortcut) throws -> (CGEvent, CGEvent) {
+        guard shortcut.isValid,
+              let source = CGEventSource(stateID: .privateState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: false) else {
+            throw KinesisError(message: "macOS couldn't create the recorded keyboard shortcut")
+        }
+        var flags: CGEventFlags = []
+        if shortcut.modifiers.contains(.control) { flags.insert(.maskControl) }
+        if shortcut.modifiers.contains(.option) { flags.insert(.maskAlternate) }
+        if shortcut.modifiers.contains(.shift) { flags.insert(.maskShift) }
+        if shortcut.modifiers.contains(.command) { flags.insert(.maskCommand) }
+        for event in [down, up] {
+            event.flags.formUnion(flags)
+            event.setIntegerValueField(.eventSourceUserData, value: shortcutEventTag)
+            event.setIntegerValueField(.keyboardEventAutorepeat, value: 0)
+        }
+        return (down, up)
     }
 
     static func events(for action: MacAction) throws -> (CGEvent, CGEvent) {

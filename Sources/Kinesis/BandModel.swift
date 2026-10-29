@@ -79,12 +79,73 @@ final class BandModel: ObservableObject {
     private var switchReleased = false
     private var switchSecondTapUntil: Double?
     private var switchWait: Task<Void, Never>?
+    private struct CompletedCursorSwitch {
+        let tap: TapGesture
+        let pressTimestampUs: UInt64
+        let completedAt: Double
+        var releasedAt: Double?
+    }
+    private var completedCursorSwitch: CompletedCursorSwitch?
+    private struct DeferredTapAction {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+    private var deferredTapActions: [String: DeferredTapAction] = [:]
+    private var chatGPTDictationTask: Task<Void, Never>?
+    private var chatGPTDictationID: UUID?
+    private static let singleTapDecisionDelay = 0.4
     /// Turns handwriting on or off, for a gesture bound to it. Dev builds set it.
     var onToggleHandwriting: (() -> Void)?
     @Published var tapMappings: [TapGesture: MacAction] = [.indexTap: .none, .indexDoubleTap: .playPause, .middleTap: .none, .middleDoubleTap: .mute, .middleHold: .none] {
         didSet {
+            cancelChatGPTDictation()
             defaults.set(Dictionary(uniqueKeysWithValues: tapMappings.map { ($0.key.rawValue, $0.value.rawValue) }), forKey: "tapMappings")
         }
+    }
+    @Published var dictationShortcut: KeyboardShortcut? {
+        didSet {
+            if let dictationShortcut, let data = try? JSONEncoder().encode(dictationShortcut) {
+                defaults.set(data, forKey: "dictationShortcut")
+            } else { defaults.removeObject(forKey: "dictationShortcut") }
+        }
+    }
+    @Published var chatGPTDictationShortcut: KeyboardShortcut? {
+        didSet {
+            cancelChatGPTDictation()
+            if let chatGPTDictationShortcut, let data = try? JSONEncoder().encode(chatGPTDictationShortcut) {
+                defaults.set(data, forKey: "chatGPTDictationShortcut")
+            } else { defaults.removeObject(forKey: "chatGPTDictationShortcut") }
+        }
+    }
+    @Published var chatGPTDestination = ChatGPTDestination.currentChat {
+        didSet {
+            cancelChatGPTDictation()
+            defaults.set(chatGPTDestination.rawValue, forKey: "chatGPTDestination")
+        }
+    }
+    @Published var chatGPTChatLink = "" {
+        didSet {
+            cancelChatGPTDictation()
+            defaults.set(chatGPTChatLink, forKey: "chatGPTChatLink")
+        }
+    }
+    @Published var chatGPTSendShortcut: KeyboardShortcut? {
+        didSet {
+            if let chatGPTSendShortcut, let data = try? JSONEncoder().encode(chatGPTSendShortcut) {
+                defaults.set(data, forKey: "chatGPTSendShortcut")
+            } else { defaults.removeObject(forKey: "chatGPTSendShortcut") }
+        }
+    }
+    @Published private(set) var customShortcuts: [String: KeyboardShortcut] = [:] {
+        didSet {
+            if let data = try? JSONEncoder().encode(customShortcuts) { defaults.set(data, forKey: "customShortcuts") }
+        }
+    }
+
+    func customShortcut(for gesture: RecognizedGesture) -> KeyboardShortcut? { customShortcuts[gesture.bindingID] }
+
+    func setCustomShortcut(_ shortcut: KeyboardShortcut?, for gesture: RecognizedGesture) {
+        customShortcuts[gesture.bindingID] = shortcut
     }
     @Published var dialTarget = DialTarget.volume {
         didSet { defaults.set(dialTarget.rawValue, forKey: "dialTarget"); resetDial() }
@@ -96,7 +157,7 @@ final class BandModel: ObservableObject {
     @Published var developerMode = false {
         didSet {
             defaults.set(developerMode, forKey: "developerMode")
-            if !developerMode { rawEMGEnabled = false; setAirCursorEnabled(false) }
+            if !developerMode { rawEMGEnabled = false }
         }
     }
     @Published private(set) var airCursorEnabled = false {
@@ -139,7 +200,7 @@ final class BandModel: ObservableObject {
             airPointer.steadiness = cursorSteadiness
         }
     }
-    var canUseAirCursor: Bool { developerMode && live && controlsEnabled && handConfirmed && pendingHand == nil && !modelControlsUnavailable }
+    var canUseAirCursor: Bool { live && controlsEnabled && controls.trusted && handConfirmed && pendingHand == nil && !modelControlsUnavailable }
     /// How far the forearm turns to cross the screen: measured by calibration, or the standard reach.
     @Published private(set) var pointerReach = PointerReach.standard(for: .right) {
         didSet { pointerHome.reset() }
@@ -318,6 +379,7 @@ final class BandModel: ObservableObject {
     @Published private(set) var streamHint: String?
     @Published var mappings: [SwipeDirection: MacAction] = [.left: .previousDesktop, .right: .nextDesktop, .up: .missionControl, .down: .dismiss] {
         didSet {
+            cancelChatGPTDictation()
             defaults.set(Dictionary(uniqueKeysWithValues: mappings.map { ($0.key.rawValue, $0.value.rawValue) }), forKey: "swipeMappings")
         }
     }
@@ -470,6 +532,23 @@ final class BandModel: ObservableObject {
         self.controls = controls
         self.pairClient = pairClient
         self.sessionStore = sessionStore
+        if let data = defaults.data(forKey: "dictationShortcut") {
+            dictationShortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data)
+        }
+        if let data = defaults.data(forKey: "chatGPTDictationShortcut") {
+            chatGPTDictationShortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data)
+        }
+        chatGPTDestination = ChatGPTDestination(rawValue: defaults.string(forKey: "chatGPTDestination") ?? "") ?? .currentChat
+        chatGPTChatLink = defaults.string(forKey: "chatGPTChatLink") ?? ""
+        if let data = defaults.data(forKey: "chatGPTSendShortcut") {
+            chatGPTSendShortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data)
+        }
+        if let data = defaults.data(forKey: "customShortcuts"),
+           let saved = try? JSONDecoder().decode([String: KeyboardShortcut].self, from: data) {
+            let bindings = Set(SwipeDirection.allCases.map { RecognizedGesture.swipe($0).bindingID }
+                + TapGesture.allCases.map { RecognizedGesture.tap($0).bindingID })
+            customShortcuts = saved.filter { bindings.contains($0.key) }
+        }
         accessibilityAllowed = controls.trusted
         hasSavedMetaSession = sessionStore.hasSavedSession()
         startsAutomatically = defaults.bool(forKey: "startsAutomatically")
@@ -789,9 +868,27 @@ final class BandModel: ObservableObject {
     }
 
     func setAirCursorEnabled(_ enabled: Bool) {
-        if !enabled { cancelPointerCalibration(); releaseHeldButton() }
+        cancelChatGPTDictation()
+        cancelDeferredTapActions()
+        if !enabled {
+            if airCursorEnabled, let pending = switchPending,
+               let tap = TapGesture.allCases.first(where: {
+                   $0.finger == pending.finger && tapMappings[$0] == .toggleAirCursor
+               }) {
+                completedCursorSwitch = CompletedCursorSwitch(tap: tap, pressTimestampUs: pending.timestampUs,
+                    completedAt: clock(), releasedAt: switchReleased ? clock() : nil)
+            }
+            cancelPointerCalibration()
+            releaseHeldButton()
+            switchWait?.cancel()
+            switchWait = nil
+            switchPending = nil
+            switchReleased = false
+            switchSecondTapUntil = nil
+        }
         guard !enabled || (canUseAirCursor && pointerCalibration == nil) else { return }
         guard enabled != airCursorEnabled else { return }
+        if enabled { completedCursorSwitch = nil }
         airCursorEnabled = enabled
         cursorRepositioning = false
         // Start from wherever the pointer is.
@@ -996,6 +1093,7 @@ final class BandModel: ObservableObject {
         started = clock()
         router.reset()
         suspendActions()
+        completedCursorSwitch = nil
         do {
             try connection.start(command, onEvent: { [weak self] event in
                 self?.receive(event)
@@ -1228,7 +1326,9 @@ final class BandModel: ObservableObject {
             pairFailedStep = nil
             bandRejectsIdentity = false
             connectRejections = 0
-            if heartbeat == nil { subscribedAt = now }
+            // Status traffic may precede the subscription acknowledgement. It proves
+            // liveness, but must not hide a subscription that never sends sensor data.
+            if subscribedAt == nil { subscribedAt = now }
             if case .enroll = activeOperation, enrollmentStage.isRunning {
                 // Streams ready after the ceremony: the band now trusts the
                 // new key. Finishing winds the ceremony connection down and
@@ -1307,6 +1407,7 @@ final class BandModel: ObservableObject {
                 return
             }
             if let label = message.gestureLabel, lastGesture != label { lastGesture = label }
+            if !airCursorEnabled, consumeCompletedCursorSwitch(message, now: now) { return }
             if airCursorEnabled {
                 guard !cursorRepositioning else { return }
                 if message.finger != "thumb" {
@@ -1317,6 +1418,11 @@ final class BandModel: ObservableObject {
             if !message.synthetic, ["index", "middle"].contains(message.finger) {
                 let finger = message.finger
                 let actions = [message.derivedAction, message.action]
+                // A second contact can still become a double tap or a hold.
+                // Do not let the first contact's provisional single fire meanwhile.
+                if actions.contains(where: { ["press", "hold", "buttonPress", "buttonHold"].contains($0) }) {
+                    cancelDeferredTapAction(for: finger)
+                }
                 if actions.contains(where: { ["press", "hold", "buttonPress", "buttonHold"].contains($0) }), pinchedFinger != finger {
                     pinchedFinger = finger
                 } else if actions.contains(where: { ["release", "buttonRelease", "buttonHoldRelease"].contains($0) }), pinchedFinger == finger {
@@ -1356,11 +1462,19 @@ final class BandModel: ObservableObject {
             gestureCount += 1
             totalGestureCount += 1
             defaults.set(totalGestureCount, forKey: "totalGestureCount")
+            if case .tap(let tap) = gesture {
+                if tap.action != "tap" { cancelDeferredTapAction(for: tap.finger) }
+                else if action != .none, hasLongerTapAssignment(for: tap.finger) {
+                    deferSingleTapAction(action, gesture: gesture, finger: tap.finger,
+                                         eventTime: message.receivedAt, queuedAt: now)
+                    return
+                }
+            }
             guard controlsEnabled, action != .none,
                   gate.allows(eventTime: message.receivedAt, now: now, live: live, trusted: controls.trusted) else {
                 return
             }
-            dispatch(action)
+            dispatch(action, gesture: gesture)
         case .dialState(let engaged):
             guard !airCursorEnabled, pointerCalibration == nil else { return }
             guard live, pendingHand == nil, abs(now - event.receivedAt) <= 0.35, !linkIsLate(at: now) else { resetDial(); return }
@@ -1446,6 +1560,44 @@ final class BandModel: ObservableObject {
         if automaticStartPending && controls.trusted { toggleControls() }
     }
 
+    private func hasLongerTapAssignment(for finger: String) -> Bool {
+        TapGesture.allCases.contains {
+            $0.finger == finger && $0.action != "tap" && (tapMappings[$0] ?? .none) != .none
+        }
+    }
+
+    private func cancelDeferredTapAction(for finger: String) {
+        deferredTapActions.removeValue(forKey: finger)?.task.cancel()
+    }
+
+    private func cancelDeferredTapActions() {
+        for pending in deferredTapActions.values { pending.task.cancel() }
+        deferredTapActions.removeAll()
+    }
+
+    /// The band can report singleTap before doubleTap for one physical action.
+    /// Keep the single provisional without spending the shared action cooldown.
+    private func deferSingleTapAction(_ action: MacAction, gesture: RecognizedGesture, finger: String,
+                                      eventTime: Double, queuedAt: Double) {
+        cancelDeferredTapAction(for: finger)
+        guard controlsEnabled, live, controls.trusted else { return }
+        let id = UUID()
+        let task = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.singleTapDecisionDelay))
+            guard !Task.isCancelled, let self, self.deferredTapActions[finger]?.id == id else { return }
+            self.deferredTapActions.removeValue(forKey: finger)
+            let now = self.clock()
+            guard self.wantsConnection, self.live, !self.sleeping, !self.quitting,
+                  self.controlsEnabled, self.pendingHand == nil, !self.airCursorEnabled,
+                  !self.modelControlsUnavailable, !self.linkIsLate(at: now),
+                  case .tap(let tap) = gesture, self.tapMappings[tap] == action,
+                  self.gate.allowsDeferred(eventTime: eventTime, queuedAt: queuedAt, now: now,
+                                           maximumDelay: 0.75, live: self.live, trusted: self.controls.trusted) else { return }
+            self.dispatch(action, gesture: gesture)
+        }
+        deferredTapActions[finger] = DeferredTapAction(id: id, task: task)
+    }
+
     /// While the air cursor runs, its pinches are clicks. When a tap gesture is bound to
     /// turning it off, that finger's pinches wait just long enough to tell the switch from a
     /// click: a double tap waits for a second pinch, a hold for the pinch to last, a single tap
@@ -1453,8 +1605,9 @@ final class BandModel: ObservableObject {
     /// through as it would have. The other finger is never held back.
     /// Returns true when it took the message.
     private func holdForCursorSwitch(_ message: BandGesture, now: Double) -> Bool {
-        guard let bound = tapMappings.first(where: { $0.value == .toggleAirCursor })?.key,
-              message.finger == bound.finger, !message.synthetic else { return false }
+        guard let bound = TapGesture.allCases.first(where: {
+            $0.finger == message.finger && tapMappings[$0] == .toggleAirCursor
+        }), !message.synthetic else { return false }
         let actions = [message.action, message.derivedAction]
         let press = actions.contains(where: { ["press", "buttonPress"].contains($0) }) && !actions.contains("buttonHold")
         let release = actions.contains(where: { ["release", "buttonRelease", "buttonHoldRelease"].contains($0) })
@@ -1464,7 +1617,10 @@ final class BandModel: ObservableObject {
         case "doubletap":
             if press {
                 if let until = switchSecondTapUntil, now <= until {
-                    // Its release then goes down the ordinary path, where it does nothing.
+                    // Remember the second contact so its paired/classified reports
+                    // remain part of this completed switch after the mode changes.
+                    switchPending = message
+                    switchReleased = false
                     turnOffCursorBySwitch()
                     return true
                 }
@@ -1504,6 +1660,7 @@ final class BandModel: ObservableObject {
                 return true
             }
             guard switchPending != nil else { return false }
+            switchReleased = true
             turnOffCursorBySwitch()
             return true
         }
@@ -1519,7 +1676,7 @@ final class BandModel: ObservableObject {
         let pending = switchPending
         switchWait = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            guard let self, !Task.isCancelled, self.switchPending?.sequence == pending?.sequence,
+            guard let self, !Task.isCancelled, self.airCursorEnabled, self.switchPending?.sequence == pending?.sequence,
                   self.switchPending?.timestampUs == pending?.timestampUs, let replay = decide(self) else { return }
             self.replayPending(replay, now: self.clock())
         }
@@ -1527,7 +1684,7 @@ final class BandModel: ObservableObject {
 
     /// Sends the waiting pinch on as the cursor would have taken it: a press, or a whole click.
     private func replayPending(_ replay: SwitchReplay, now: Double) {
-        guard let pending = switchPending else { return }
+        guard airCursorEnabled, let pending = switchPending else { return }
         switchPending = nil
         switchSecondTapUntil = nil
         switchWait?.cancel()
@@ -1540,15 +1697,49 @@ final class BandModel: ObservableObject {
     }
 
     private func turnOffCursorBySwitch() {
-        switchPending = nil
-        switchSecondTapUntil = nil
-        switchWait?.cancel()
         setAirCursorEnabled(false)
         lastAction = "Air cursor off"
     }
 
+    /// The band's classified tap/hold can follow the raw pinches that already
+    /// switched the cursor off. Consume that tail rather than toggling it on
+    /// again; a new press starts a genuinely new gesture immediately.
+    private func consumeCompletedCursorSwitch(_ message: BandGesture, now: Double) -> Bool {
+        guard var completed = completedCursorSwitch, !message.synthetic,
+              message.finger == completed.tap.finger else { return false }
+        if let releasedAt = completed.releasedAt, now - releasedAt > 0.7 {
+            completedCursorSwitch = nil
+            return false
+        }
+        let actions = [message.action, message.derivedAction]
+        if actions.contains(where: { ["press", "buttonPress"].contains($0) }) {
+            // Raw press and derived buttonPress describe the same contact.
+            // A paired report can arrive even after its release. Keep suppressing
+            // that contact (raw/derived stamps can differ by a few microseconds);
+            // a missing release has a bounded retry window.
+            let stampDistance = max(message.timestampUs, completed.pressTimestampUs)
+                - min(message.timestampUs, completed.pressTimestampUs)
+            if stampDistance <= 1_000
+                || (completed.releasedAt == nil && now - completed.completedAt <= 0.75) { return true }
+            completedCursorSwitch = nil
+            return false
+        }
+        if actions.contains(where: { ["release", "buttonRelease", "buttonHoldRelease"].contains($0) }) {
+            guard message.timestampUs >= completed.pressTimestampUs else { return true }
+            completed.releasedAt = now
+            completedCursorSwitch = completed
+            cursorPressedFingers.remove(message.finger)
+            if pinchedFinger == message.finger { pinchedFinger = nil }
+            return true
+        }
+        let derived = ["singleTap": "tap", "doubleTap": "doubletap", "buttonHold": "hold"]
+        // A double tap also emits a provisional single, and a held pinch can
+        // emit a tap on release. They belong to this already-consumed switch.
+        return ["tap", "doubletap", "hold"].contains(derived[message.derivedAction] ?? message.action)
+    }
+
     private func receiveCursorGesture(_ message: BandGesture, now: Double) {
-        guard canUseAirCursor, !message.synthetic, ["index", "middle"].contains(message.finger),
+        guard airCursorEnabled, canUseAirCursor, !message.synthetic, ["index", "middle"].contains(message.finger),
               message.receivedAt >= cursorArmedAt, now - message.receivedAt <= 0.1 else { return }
         let actions = [message.action, message.derivedAction]
         if actions.contains(where: { ["release", "buttonRelease", "buttonHoldRelease"].contains($0) }) {
@@ -1891,15 +2082,138 @@ final class BandModel: ObservableObject {
         }
     }
 
-    private func dispatch(_ action: MacAction, count: Int = 1) {
-        // Kinesis's own switches, only in developer mode.
+    private func cancelChatGPTDictation() {
+        chatGPTDictationTask?.cancel()
+        chatGPTDictationTask = nil
+        if chatGPTDictationID != nil { lastAction = "ChatGPT Dictation cancelled" }
+        chatGPTDictationID = nil
+    }
+
+    private func isChatGPTDictationGesture(_ gesture: RecognizedGesture) -> Bool {
+        switch gesture {
+        case .swipe(let direction): mappings[direction] == .chatGPTDictation
+        case .tap(let tap): tapMappings[tap] == .chatGPTDictation
+        }
+    }
+
+    private func beginChatGPTDictation(for gesture: RecognizedGesture?) {
+        guard let gesture, chatGPTDictationID == nil else { return }
+        guard let shortcut = chatGPTDictationShortcut else {
+            error = "Record ChatGPT’s start/stop Dictation shortcut in Gestures first."
+            lastAction = "Shortcut needs setup"
+            return
+        }
+        let destination = chatGPTDestination
+        let chatLink = chatGPTChatLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard destination != .myDot || chatLink.isEmpty || ChatGPTDestination.conversationURL(from: chatLink) != nil else {
+            error = "Paste a valid ChatGPT chat deep link in Gestures for My dot."
+            lastAction = "Chat link needs setup"
+            return
+        }
+        let requestedAt = clock()
+        stopAirMouseForChatGPTAction()
+        let id = UUID()
+        chatGPTDictationID = id
+        lastAction = "Opening ChatGPT…"
+        error = nil
+        let controls = controls
+        chatGPTDictationTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.chatGPTDictationID == id {
+                    self.chatGPTDictationID = nil
+                    self.chatGPTDictationTask = nil
+                }
+            }
+            do {
+                let processIdentifier = try await controls.activateChatGPT(destination: destination, chatLink: chatLink)
+                guard !Task.isCancelled, let self, self.chatGPTDictationID == id else { return }
+                let elapsed = self.clock() - requestedAt
+                guard elapsed.isFinite, (0...3).contains(elapsed),
+                      self.wantsConnection, self.live, self.controlsEnabled, controls.trusted,
+                      !self.sleeping, !self.quitting, !self.airCursorEnabled,
+                      self.pendingHand == nil, !self.modelControlsUnavailable,
+                      !self.linkIsLate(at: self.clock()), self.chatGPTDictationShortcut == shortcut,
+                      self.chatGPTDestination == destination,
+                      self.chatGPTChatLink.trimmingCharacters(in: .whitespacesAndNewlines) == chatLink,
+                      self.isChatGPTDictationGesture(gesture) else {
+                    self.lastAction = "ChatGPT Dictation cancelled"
+                    return
+                }
+                try controls.postShortcut(shortcut, toApplication: processIdentifier)
+                self.lastAction = "Sent ChatGPT Dictation shortcut"
+            } catch {
+                guard !Task.isCancelled, let self, self.chatGPTDictationID == id else { return }
+                self.error = error.localizedDescription
+                self.lastAction = "ChatGPT Dictation unavailable"
+                if !controls.trusted { self.pause() }
+            }
+        }
+    }
+
+    private func stopAirMouseForChatGPTAction() {
+        guard airCursorEnabled else { return }
+        setAirCursorEnabled(false)
+        // Mode changes rearm the gate; retain this action's cooldown so its
+        // paired classified report cannot toggle Dictation or send twice.
+        let now = clock()
+        _ = gate.allows(eventTime: now, now: now, live: live, trusted: controls.trusted)
+    }
+
+    private func dispatch(_ action: MacAction, count: Int = 1, gesture: RecognizedGesture? = nil) {
+        if action == .chatGPTDictation {
+            beginChatGPTDictation(for: gesture)
+            return
+        }
+        cancelChatGPTDictation()
+        if action == .chatGPTSend {
+            guard let shortcut = chatGPTSendShortcut else {
+                error = "Record your ChatGPT Send shortcut in Gestures first."
+                lastAction = "Shortcut needs setup"
+                return
+            }
+            guard let processIdentifier = controls.frontmostChatGPTProcessIdentifier else {
+                error = "Open and review your prompt in ChatGPT before using the Send gesture."
+                lastAction = "ChatGPT must be in front"
+                return
+            }
+            stopAirMouseForChatGPTAction()
+            do {
+                try controls.postShortcut(shortcut, toApplication: processIdentifier)
+                error = nil
+                lastAction = "Sent ChatGPT Send shortcut"
+            } catch {
+                self.error = error.localizedDescription
+                self.lastAction = "ChatGPT Send unavailable"
+                if !controls.trusted { pause() }
+            }
+            return
+        }
+        if action == .dictation || action == .customShortcut {
+            let shortcut = action == .dictation ? dictationShortcut : gesture.flatMap { customShortcut(for: $0) }
+            guard let shortcut else {
+                error = action == .dictation
+                    ? "Record your macOS Dictation shortcut in Gestures first."
+                    : "Record a keyboard shortcut for this gesture in Gestures first."
+                lastAction = "Shortcut needs setup"
+                return
+            }
+            do {
+                try controls.postShortcut(shortcut)
+                error = nil
+                lastAction = action == .dictation ? "Sent Dictation shortcut" : "Sent: \(shortcut.displayName)"
+            } catch {
+                self.error = error.localizedDescription
+                pause()
+            }
+            return
+        }
         if action.isKinesisSwitch {
-            guard developerMode else { return }
             switch action {
             case .toggleAirCursor:
                 setAirCursorEnabled(!airCursorEnabled)
                 lastAction = airCursorEnabled ? "Air cursor on" : "Air cursor off"
             case .toggleHandwriting:
+                guard developerMode else { return }
                 onToggleHandwriting?()
             default: break
             }
@@ -1941,8 +2255,9 @@ final class BandModel: ObservableObject {
             let linkSilence = now - (heartbeat ?? started)
             let linkDead = linkSilence > (heartbeat == nil ? 50 : 8)
             var sensorsStalled = false
-            if case .connect = activeOperation, !sensorRecoveryUsed, charging != true, let lastSensorAt {
-                sensorsStalled = now - lastSensorAt > 10
+            let sensorBaseline = lastSensorAt ?? subscribedAt
+            if case .connect = activeOperation, !sensorRecoveryUsed, charging != true, let sensorBaseline {
+                sensorsStalled = now - sensorBaseline > 10
             }
             if linkDead || sensorsStalled {
                 if !linkDead { sensorRecoveryUsed = true }
@@ -1952,7 +2267,7 @@ final class BandModel: ObservableObject {
                     suspendActions()
                 }
                 phase = "Reconnecting…"
-                connectionLog.notice("\(linkDead ? "No band input" : "No sensor frames", privacy: .public) for \(linkDead ? linkSilence : now - (self.lastSensorAt ?? now), privacy: .public)s; reconnecting once")
+                connectionLog.notice("\(linkDead ? "No band input" : "No sensor frames", privacy: .public) for \(linkDead ? linkSilence : now - (sensorBaseline ?? now), privacy: .public)s; reconnecting once")
                 connection.stop()
             }
         }

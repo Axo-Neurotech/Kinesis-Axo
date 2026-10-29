@@ -119,9 +119,9 @@ private struct BandMenu: View {
         if model.live || model.wantsConnection {
             Button("disconnect") { model.disconnect() }
         }
+        Toggle("air mouse", isOn: Binding(get: { model.airCursorEnabled }, set: { model.setAirCursorEnabled($0) }))
+            .disabled(!model.airCursorEnabled && !model.canUseAirCursor)
         if model.developerMode {
-            Toggle("air cursor", isOn: Binding(get: { model.airCursorEnabled }, set: { model.setAirCursorEnabled($0) }))
-                .disabled(!model.airCursorEnabled && !model.canUseAirCursor)
             Button("handwriting") {
                 open()
                 NotificationCenter.default.post(name: .kinesisOpenPage, object: AppPage.write.rawValue)

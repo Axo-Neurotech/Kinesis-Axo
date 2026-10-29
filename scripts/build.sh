@@ -7,10 +7,24 @@ if pgrep -f "^$PWD/dist/Kinesis.app/Contents/MacOS/Kinesis$" >/dev/null; then
     exit 1
 fi
 
-build_args=(-c release --arch arm64 --arch x86_64 -Xswiftc -warnings-as-errors)
+local_build=false
+for argument in "$@"; do
+    case "$argument" in
+        --local) local_build=true ;;
+        --dev) KINESIS_DEV=1 ;;
+        --help|-h)
+            printf 'usage: ./scripts/build.sh [--local] [--dev]\n'
+            printf '  --local  build for this Mac and use ad-hoc signing by default\n'
+            printf '  --dev    include developer tools\n'
+            exit 0 ;;
+        *) printf 'unknown argument: %s\n' "$argument" >&2; exit 1 ;;
+    esac
+done
+
+build_args=(-c release -Xswiftc -warnings-as-errors)
+if ! $local_build; then build_args+=(--arch arm64 --arch x86_64); fi
 # --dev (or KINESIS_DEV=1) makes a dev build: the same app with experiments and
 # developer tools compiled in, such as the practice lab. Releases leave them out.
-if [ "${1:-}" = --dev ]; then KINESIS_DEV=1; fi
 if [ "${KINESIS_DEV:-}" = 1 ]; then build_args+=(-Xswiftc -DKINESIS_DEV); fi
 binary_dir=$(swift build "${build_args[@]}" --show-bin-path)
 # SwiftPM can retain removed resources in an existing bundle.
@@ -50,14 +64,22 @@ iconutil -c icns "$stage_dir/Kinesis.iconset" -o "$staged_app/Contents/Resources
 
 signing_identity="${KINESIS_SIGNING_IDENTITY:-}"
 if [ -z "$signing_identity" ]; then
-    signing_identity=$(security find-identity -v -p codesigning | awk '
-        /"Apple Development:/ { count++; identity = $2 }
-        END { print (count == 1 ? identity : "-") }
-    ')
+    if $local_build; then
+        signing_identity="-"
+    else
+        signing_identity=$(security find-identity -v -p codesigning | awk '
+            /"Apple Development:/ { count++; identity = $2 }
+            END { print (count == 1 ? identity : "-") }
+        ')
+    fi
 fi
 codesign --force --options runtime --sign "$signing_identity" "$staged_app"
 codesign --verify --deep --strict "$staged_app"
-lipo "$staged_app/Contents/MacOS/Kinesis" -verify_arch arm64 x86_64
+if $local_build; then
+    lipo "$staged_app/Contents/MacOS/Kinesis" -verify_arch "$(uname -m)"
+else
+    lipo "$staged_app/Contents/MacOS/Kinesis" -verify_arch arm64 x86_64
+fi
 plutil -lint "$staged_app/Contents/Info.plist"
 
 if [ -e "$app_path" ]; then mv "$app_path" "$stage_dir/previous.app"; fi

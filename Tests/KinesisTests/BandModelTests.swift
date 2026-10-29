@@ -2046,13 +2046,14 @@ private struct FakePairClient: BandPairClient {
     await model.shutdown()
 }
 
-@Test @MainActor func kinesisSwitchesToggleOnlyInDeveloperModeAndPostNothing() async throws {
+@Test @MainActor func airMouseSwitchWorksNormallyAndHandwritingRemainsDeveloperOnly() async throws {
     let defaults = MemoryDefaults()
     defaults.set(true, forKey: "setupCompleted")
     let connection = RecordedConnection()
     let controls = RecordingControls()
     var now = 100.0
-    let model = BandModel(defaults: defaults, connection: connection, controls: controls, clock: { now })
+    let model = BandModel(defaults: defaults, connection: connection, controls: controls,
+                          sessionStore: SavedSessionStore(), clock: { now })
     model.selectedAddress = "test-band"
     model.mappings[.left] = .toggleAirCursor
     model.mappings[.right] = .toggleHandwriting
@@ -2070,20 +2071,26 @@ private struct FakePairClient: BandPairClient {
         connection.send(.gesture(BandGesture(sequence: sequence, timestampUs: sequence * 1000, finger: "thumb", action: direction,
                                              receivedAt: now)), at: now)
     }
-    // Outside developer mode, the switches do nothing.
+    // The air mouse is a normal action. The same swipe switches it off while
+    // its pinches are serving as mouse clicks; neither switch posts a shortcut.
     swipe("left")
+    #expect(model.airCursorEnabled)
+    swipe("left")
+    #expect(!model.airCursorEnabled)
     swipe("right")
-    try await waitUntil { model.gestureCount == 2 }
-    #expect(!model.airCursorEnabled && handwriting == 0)
-    // In developer mode, a swipe turns the air cursor on, and the same swipe, which still
-    // gets through while the cursor owns the pinches, turns it off.
+    #expect(handwriting == 0)
+    // Leaving developer mode must not turn off this normal feature.
     model.developerMode = true
     swipe("left")
-    try await waitUntil { model.airCursorEnabled }
+    #expect(model.airCursorEnabled)
+    model.developerMode = false
+    #expect(model.airCursorEnabled)
     swipe("left")
-    try await waitUntil { !model.airCursorEnabled }
+    #expect(!model.airCursorEnabled)
+    // Handwriting keeps its existing developer-only restriction.
+    model.developerMode = true
     swipe("right")
-    try await waitUntil { handwriting == 1 }
+    #expect(handwriting == 1)
     #expect(controls.actions.isEmpty)
     await model.shutdown()
 }

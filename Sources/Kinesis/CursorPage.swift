@@ -24,8 +24,8 @@ struct CursorPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
             Text("a little room to move.").font(KinesisType.title).tracking(-1.2)
-            OpenRow(title: "air cursor", detail: "experimental") {
-                Toggle("Air cursor", isOn: Binding(get: { model.airCursorEnabled }, set: { model.setAirCursorEnabled($0) }))
+            OpenRow(title: "air mouse", detail: "experimental") {
+                Toggle("Air mouse", isOn: Binding(get: { model.airCursorEnabled }, set: { model.setAirCursorEnabled($0) }))
                     .toggleStyle(KinesisToggleStyle())
                     .disabled(!model.airCursorEnabled && !model.canUseAirCursor)
             }

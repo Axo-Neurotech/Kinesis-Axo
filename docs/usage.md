@@ -30,6 +30,8 @@ the meta sign-in happens once, on meta's own page. the band only trusts an owner
 
 turn on **start automatically** under **band** to reconnect and enable controls when kinesis opens. it waits for a live connection and accessibility access. pausing or opening quick setup keeps controls paused for the rest of that run, until you enable them again.
 
+if an acknowledged connection delivers no sensor frames for ten seconds, kinesis reconnects using the saved pairing, even when status replies still arrive. this also covers a subscription that never sends its first frame. automatic recovery preserves whether controls were enabled or paused and releases held actions; it does not replay old gestures. a known charging band is left alone, and sensor recovery is attempted once until thirty seconds of continuous sensor traffic restore the retry budget. an absence of gestures while sensor data continues is not treated as a stall.
+
 the first launch has a short setup: connect, try a swipe, practice a pinch and turn, and allow mac controls. controls stay paused while you practice; the setup dial never changes your volume or brightness. **quick setup**, the arrow icon at the top right of the window, brings it back anytime. you can skip it too.
 
 choose your hand during setup or under **band**. kinesis reads the band's current setting when it connects. changing hands pauses mac controls, updates the band, and checks the setting again before confirming it. move the band to that wrist, then enable controls when you're ready. swipe directions come directly from the band; the app adjusts its own wrist-turn dial for the selected hand.
@@ -55,6 +57,18 @@ everything is selectable in the app. the initial mappings are:
 | middle hold | unassigned |
 | pinch thumb + index, then turn your wrist | volume |
 
+under **gestures**, each swipe or tap can also run **start or stop Dictation**, **ChatGPT Dictation**, **Send in ChatGPT**, **air mouse on / off**, or its own **custom keyboard shortcut**. choose a custom shortcut, press a key with Control, Option or Command in the recorder, then save it. Shift can be included. each gesture keeps its own shortcut, saved across launches. recording pauses controls so a gesture cannot trigger another action during setup; enable controls again when you are ready. cancelling the recorder keeps the previous gesture assignment.
+
+when a finger has both a single-tap action and a double-tap or hold action, the single waits up to 0.4 seconds to distinguish them. a second contact or the longer gesture cancels the provisional single, so its action cannot block the double tap. pausing, disconnecting, changing that mapping or entering air-mouse mode discards pending actions.
+
+for Dictation, first enable it under macOS **System Settings → Keyboard → Dictation** and choose an ordinary custom shortcut, such as Control–Option–D. record that same combination in Kinesis's **macOS Dictation shortcut** setting. Fn twice and the microphone key are not recorded chords. select a text field in the app you want to type into, then perform the mapped gesture; Kinesis sends the shortcut without taking focus. macOS handles speech input and its permissions. Kinesis reports that it sent the shortcut, rather than claiming Dictation has started or stopped.
+
+**ChatGPT Dictation** has its own **ChatGPT Dictation shortcut** setting. record the shortcut you use in ChatGPT, then assign the action to a gesture. choose **current chat** to bring ChatGPT forward, or **my dot** for your Dot conversation before sending the configured start or stop chord. under my dot, leave **dot chat link** blank to open the current account’s Dot, or paste the copied `codex://threads/…` link to open that exact conversation. the link is saved on this Mac; arbitrary web links and links containing prompts are not accepted. review the text in ChatGPT before sending; Kinesis does not submit a message or claim that recording has started or stopped. this setting starts with current chat, has no default chord and does not change your macOS Dictation shortcut.
+
+**Send in ChatGPT** is a separate optional gesture action with its own **ChatGPT Send shortcut** setting and no default chord. Command-Return is the usual send shortcut; record the exact chord used by your app. leave ChatGPT in front, review the composed text, then perform the Send gesture. choosing a Dictation destination does not automatically send anything. index and middle gesture actions require the air mouse to be off, because those pinches control mouse buttons while it is on.
+
+the air mouse is available without developer mode. assign a gesture to turn it on and use that gesture again, or press Escape, to stop. index and middle pinches act as mouse buttons while it is active; a mapped air-mouse tap/hold remains available to turn it off without an extra click. thumb swipes retain their actions, so a swipe is a useful Dictation binding when you want to point at a field and dictate. the **cursor** page contains speed and steadiness settings.
+
 the dial arms once you have held the pinch for about a fifth of a second, so the two presses of a double tap never turn it. letting go of a turn is not counted as a tap. holding the index finger is the dial, so only the middle finger has a hold you can assign. the dial can also control brightness or be turned off. release and pinch again after changing its settings. media controls use the mac's current audio output, including connected airpods. brightness uses the normal brightness keys, so external displays may not respond.
 
 desktop and mission control actions use the standard control + arrow shortcuts. those need to be enabled in macos keyboard settings, and desktop switching needs another desktop. dismiss sends escape; outside mission control it can dismiss the current view. window and tab shortcuts act within the current app.
@@ -77,11 +91,23 @@ swift test -Xswiftc -warnings-as-errors
 
 ## release files
 
+to package a tested local app without rebuilding or changing its signing identity:
+
+```sh
+./scripts/package-local.sh
+```
+
+this writes a source ZIP, an app ZIP, local-release information and verified SHA-256 checksums under `dist/release-local/<version>-build<build>-<architecture>/`. output directories are immutable: the script refuses to overwrite a prior package. its source allowlist excludes Git history, builds, preferences, account sessions, pairing keys, captures and local runtime files. `dist/` stays ignored by Git; publish the archives separately as GitHub Release assets.
+
+`./scripts/build.sh --local` builds for the current Mac using Swift 6 Command Line Tools and ad-hoc signing by default. use that when a universal Xcode build is unavailable. rebuilding does not replace `/Applications/Kinesis.app`; replacing an installed locally signed build can require new macOS approval.
+
+the full upstream release workflow rebuilds a universal app and runs the complete test suite:
+
 ```sh
 ./scripts/release.sh
 ```
 
-this checks the code, builds the app, and writes a source archive and a local app archive under `dist/release/`. local recordings, preferences, research copies, and signing credentials stay out of those archives. [release notes](release-notes.md).
+this checks the code, builds the app, and writes a source archive and a local app archive under `dist/release/`. some existing tests instantiate the real Meta session store, so use an isolated development account without saved band credentials when running the entire suite. local recordings, preferences, research copies, and signing credentials stay out of those archives. [release notes](release-notes.md).
 
 the local app archive stays separate from the public dmg. to make a public release, choose a developer id application identity and notarize the app first. `asc` uses your configured apple api credentials.
 

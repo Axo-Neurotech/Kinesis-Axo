@@ -139,6 +139,12 @@ public struct GestureRouter: Sendable {
 
 public enum RecognizedGesture: Hashable, Sendable {
     case swipe(SwipeDirection), tap(TapGesture)
+    public var bindingID: String {
+        switch self {
+        case .swipe(let direction): "swipe.\(direction.rawValue)"
+        case .tap(let tap): "tap.\(tap.rawValue)"
+        }
+    }
     public var label: String {
         switch self {
         case .swipe(let direction): direction.label
@@ -207,7 +213,8 @@ public struct DialRouter: Sendable {
 public enum MacAction: String, CaseIterable, Codable, Identifiable, Sendable {
     case none, previousDesktop, nextDesktop, missionControl, dismiss, previousWindow, nextWindow, previousTab, nextTab
     case playPause, mute, volumeUp, volumeDown, brightnessUp, brightnessDown
-    /// Kinesis's own switches, offered in developer mode. They send no shortcut.
+    case dictation, chatGPTDictation, chatGPTSend, customShortcut
+    /// Kinesis's own switches. Handwriting remains a developer feature.
     case toggleAirCursor, toggleHandwriting
     public var id: String { rawValue }
     /// Handled by Kinesis itself, not posted to the Mac.
@@ -229,7 +236,11 @@ public enum MacAction: String, CaseIterable, Codable, Identifiable, Sendable {
         case .volumeDown: "Volume down"
         case .brightnessUp: "Brightness up"
         case .brightnessDown: "Brightness down"
-        case .toggleAirCursor: "Air cursor on / off"
+        case .dictation: "Start or stop Dictation"
+        case .chatGPTDictation: "ChatGPT Dictation"
+        case .chatGPTSend: "Send in ChatGPT"
+        case .customShortcut: "Custom keyboard shortcut"
+        case .toggleAirCursor: "Air mouse on / off"
         case .toggleHandwriting: "Handwriting on / off"
         }
     }
@@ -248,13 +259,14 @@ public enum MacAction: String, CaseIterable, Codable, Identifiable, Sendable {
         case .mute: "mute"
         case .volumeUp, .brightnessUp: "+"
         case .volumeDown, .brightnessDown: "−"
+        case .dictation, .chatGPTDictation, .chatGPTSend, .customShortcut: "configured shortcut"
         case .toggleAirCursor, .toggleHandwriting: "—"
         }
     }
     public var keyCode: UInt16? {
         switch self {
         case .none, .playPause, .mute, .volumeUp, .volumeDown, .brightnessUp, .brightnessDown,
-             .toggleAirCursor, .toggleHandwriting: nil
+             .dictation, .chatGPTDictation, .chatGPTSend, .customShortcut, .toggleAirCursor, .toggleHandwriting: nil
         case .previousDesktop: 123
         case .nextDesktop: 124
         case .missionControl: 126
@@ -278,6 +290,18 @@ public struct ActionGate: Sendable {
     public mutating func allows(eventTime: Double, now: Double, live: Bool, trusted: Bool) -> Bool {
         guard live, trusted, eventTime >= armedAt, now - eventTime <= 0.35,
               now - eventTime >= -0.1, now - lastAction >= minimumInterval else { return false }
+        lastAction = now
+        return true
+    }
+    /// Allows a bounded intentional delay only when the original input was fresh
+    /// at enqueue. The source timestamp is retained, rather than refreshed.
+    public mutating func allowsDeferred(eventTime: Double, queuedAt: Double, now: Double,
+                                       maximumDelay: Double, live: Bool, trusted: Bool) -> Bool {
+        guard eventTime.isFinite, queuedAt.isFinite, now.isFinite, maximumDelay.isFinite,
+              maximumDelay > 0, live, trusted, eventTime >= armedAt, queuedAt >= armedAt,
+              queuedAt - eventTime >= -0.1, queuedAt - eventTime <= 0.35,
+              now >= queuedAt, now - queuedAt <= maximumDelay,
+              now - lastAction >= minimumInterval else { return false }
         lastAction = now
         return true
     }

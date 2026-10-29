@@ -7,7 +7,7 @@ enum AppPage: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     /// Pages only developer mode shows.
-    var developer: Bool { self == .readings || self == .cursor || self == .write }
+    var developer: Bool { self == .readings || self == .write }
 }
 
 extension Notification.Name {
