@@ -20,6 +20,8 @@ swipe between desktops, open mission control, control your music, and pinch + tu
 
 this extended build adds custom keyboard shortcuts, configurable Dictation, a saved ChatGPT/dot conversation destination, a separate **Send in ChatGPT** action, connection-stall recovery, and fixes for air-mouse gesture switching. [usage and configuration](docs/usage.md).
 
+the Axo edition uses Axo Neurotech's teal, sage and snow palette, original Axo mark, and matching light/dark controls and sensor highlights. the app keeps its Kinesis name and menu-bar mark. branding is bundled locally; the interface does not load assets from the web.
+
 built on some tinkering i did with astra in [neural-band-poc](https://github.com/callbacked/neural-band-poc) (feel free to go through that repo to do your own thing), so naturally i wanted to harness it to make it do something useful
 
 some things may act quirky or not work at all, if that is the case i would love to know why, but this is all highly experimental
@@ -66,4 +68,4 @@ this packages the already-built app and an allowlisted source archive under `dis
 
 ## license
 
-source code: [mit](LICENSE), retaining the upstream copyright notice. bundled assets retain their own notices in `Sources/Kinesis/Resources/`: the hand mesh has an MIT notice, and the Meta/Gizmodo band image is explicitly excluded from Kinesis's MIT license.
+source code: [mit](LICENSE), retaining the upstream copyright notice. bundled assets retain their own notices in `Sources/Kinesis/Resources/`: the hand mesh has an MIT notice; the Meta/Gizmodo band image and Axo brand marks are separate from Kinesis's MIT license.

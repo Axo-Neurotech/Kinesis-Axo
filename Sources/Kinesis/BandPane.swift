@@ -58,15 +58,14 @@ struct BandPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
-                KinesisMark(size: CGSize(width: 25, height: 23))
-                Text("kinesis").font(.system(size: 16, weight: .medium, design: .rounded)).tracking(-0.5)
+                AxoBrandLockup()
                 #if KINESIS_DEV
                 Text("dev").font(KinesisType.micro).foregroundStyle(KinesisStyle.accent)
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Capsule().fill(KinesisStyle.accent.opacity(0.14)))
                 #endif
                 Spacer()
-            }.foregroundStyle(KinesisStyle.ink.opacity(0.9)).padding(.top, 46)
+            }.foregroundStyle(KinesisStyle.ink).padding(.top, 42)
 
             Spacer(minLength: 18)
             band
@@ -89,6 +88,13 @@ struct BandPane: View {
         }
         .padding(.horizontal, 24)
         .frame(width: 264)
+        .background {
+            LinearGradient(colors: [KinesisStyle.sidebarTop, KinesisStyle.sidebarBottom],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay { AxoSignalField() }
+                .ignoresSafeArea()
+        }
+        .overlay(alignment: .trailing) { Rectangle().fill(KinesisStyle.line).frame(width: 1) }
     }
 
     private var band: some View {

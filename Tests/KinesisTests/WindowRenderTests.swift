@@ -46,12 +46,15 @@ private struct AllowedControls: MacControls {
 }
 
 /// Draws the whole window in its main states, light and dark. It runs only
-/// when KINESIS_RENDER_DIR names a directory. SceneKit and menus draw as
+/// when KINESIS_RENDER_DIR names a directory. KINESIS_RENDER_PAGES optionally
+/// limits output to comma-separated gallery names. SceneKit and menus draw as
 /// placeholders offscreen; everything else is what the app shows.
 @Test @MainActor func windowStatesRenderForReview() throws {
     guard let directory = ProcessInfo.processInfo.environment["KINESIS_RENDER_DIR"] else { return }
+    let requestedPages = ProcessInfo.processInfo.environment["KINESIS_RENDER_PAGES"].map {
+        Set($0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    }
     let band = "render-\(UUID().uuidString)"
-    defer { BandIdentity.delete(for: band) }
 
     func model(paired: Bool, live: Bool, trusted: Bool = true, turning: Bool = false, emg: Bool = false) throws -> BandModel {
         let defaults = MemoryDefaults()
@@ -59,11 +62,11 @@ private struct AllowedControls: MacControls {
         defaults.set(1284, forKey: "totalGestureCount")
         if paired {
             defaults.set(try JSONEncoder().encode(BandDevice(address: band, name: "Meta Band 00BC")), forKey: "band")
-            if !BandIdentity.exists(for: band) { try BandIdentity.generate(for: band) }
         }
         let connection = StagedConnection()
         let model = BandModel(defaults: defaults, connection: connection, controls: AllowedControls(trusted: trusted),
-                              sessionStore: NoSession(), clock: { 100 })
+                              workspaceNotifications: NotificationCenter(), sessionStore: NoSession(),
+                              bandIdentityExists: { _ in paired }, clock: { 100 })
         if live {
             model.connect()
             connection.send(.connected)
@@ -91,10 +94,10 @@ private struct AllowedControls: MacControls {
         defaults.set(true, forKey: "setupCompleted")
         defaults.set(1_284_302, forKey: "totalGestureCount")
         defaults.set(try JSONEncoder().encode(BandDevice(address: band, name: "Alexander’s Meta Neural Band 00BC-7F3A")), forKey: "band")
-        if !BandIdentity.exists(for: band) { try BandIdentity.generate(for: band) }
         let connection = StagedConnection()
         let model = BandModel(defaults: defaults, connection: connection, controls: AllowedControls(trusted: false),
-                              sessionStore: NoSession(), clock: { 100 })
+                              workspaceNotifications: NotificationCenter(), sessionStore: NoSession(),
+                              bandIdentityExists: { _ in true }, clock: { 100 })
         model.connect()
         connection.send(.connected)
         connection.send(.heartbeat)
@@ -111,7 +114,8 @@ private struct AllowedControls: MacControls {
         let store = NoSession()
         store.saved = MetaSession(accessToken: "token", userID: "1")
         let model = BandModel(defaults: defaults, connection: connection, controls: AllowedControls(),
-                              sessionStore: store, clock: { 100 })
+                              workspaceNotifications: NotificationCenter(), sessionStore: store,
+                              bandIdentityExists: { _ in false }, clock: { 100 })
         model.pairBand()
         connection.send(.systemPairingPending)
         return model
@@ -164,13 +168,18 @@ private struct AllowedControls: MacControls {
         renderer.pointOfView = coordinator.camera
         return renderer.snapshot(atTime: 0, with: CGSize(width: 1050, height: 1050), antialiasingMode: .multisampling4X)
     }
-    for (name, window) in windows + edges {
+    let gallery = windows + edges
+    if let requestedPages {
+        let knownPages = Set(gallery.map(\.0))
+        #expect(requestedPages.isSubset(of: knownPages), "KINESIS_RENDER_PAGES contains an unknown gallery name")
+    }
+    for (name, window) in gallery where requestedPages?.contains(name) ?? true {
         let size = name.hasPrefix("edge") ? smallest : CGSize(width: 980, height: 730)
         for (mode, appearance, scheme) in [("light", NSAppearance.Name.aqua, ColorScheme.light), ("dark", .darkAqua, .dark)] {
             var png: Data?
             let standIn = try hand(dark: scheme == .dark, teaching: name.hasPrefix("setup"), pinching: name.hasSuffix("turning"))
             NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
-                let renderer = ImageRenderer(content: window.frame(width: size.width, height: size.height).environment(\.colorScheme, scheme)
+                let renderer = ImageRenderer(content: window.frame(width: size.width, height: size.height, alignment: .topLeading).environment(\.colorScheme, scheme)
                     .environment(\.handStandIn, standIn).environment(\.motionless, true))
                 renderer.scale = 1.5
                 if let image = renderer.cgImage {

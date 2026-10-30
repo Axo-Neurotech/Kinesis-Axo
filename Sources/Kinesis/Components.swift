@@ -4,7 +4,7 @@ import KinesisCore
 /// One type scale for the whole app. Large and light for what matters, small
 /// and grey for what supports it.
 enum KinesisType {
-    static let title = Font.system(size: 32, weight: .light)
+    static let title = Font.system(size: 32, weight: .medium)
     static let headline = Font.system(size: 21, weight: .regular)
     static let lead = Font.system(size: 15, weight: .regular)
     static let body = Font.system(size: 13, weight: .regular)
@@ -200,7 +200,7 @@ struct KinesisToggleStyle: ToggleStyle {
             PillSurface(fill: configuration.isOn ? KinesisStyle.accent : KinesisStyle.trayStrong)
                 .frame(width: 40, height: 23)
                 .overlay(alignment: configuration.isOn ? .trailing : .leading) {
-                    Circle().fill(.white).padding(2.5)
+                    Circle().fill(configuration.isOn ? KinesisStyle.onAccent : .white).padding(2.5)
                         .shadow(color: .black.opacity(0.22), radius: 1.5, y: 1)
                 }
                 .animation(reduceMotion ? nil : KinesisMotion.select, value: configuration.isOn)
@@ -229,7 +229,9 @@ struct PillSlider: View {
             ZStack(alignment: .leading) {
                 PillSurface(fill: KinesisStyle.tray).frame(height: 8)
                 Capsule().fill(KinesisStyle.accent).frame(width: knob / 2 + travel * fraction, height: 8)
-                Circle().fill(.white).frame(width: knob, height: knob)
+                Circle().fill(KinesisStyle.onAccent)
+                    .overlay(Circle().strokeBorder(KinesisStyle.accent, lineWidth: 1.5))
+                    .frame(width: knob, height: knob)
                     .shadow(color: .black.opacity(0.25), radius: dragging ? 5 : 2, y: 1)
                     .scaleEffect(dragging && !reduceMotion ? 1.12 : 1)
                     .offset(x: travel * fraction)
@@ -280,12 +282,12 @@ struct TextTabs<Value: Hashable>: View {
                 } label: {
                     Text(option.title).font(.system(size: 15, weight: .medium))
                         .tracking(-0.2)
-                        .foregroundStyle(chosen || hovered == option.value ? KinesisStyle.ink : KinesisStyle.secondary)
+                        .foregroundStyle(chosen ? KinesisStyle.accent : hovered == option.value ? KinesisStyle.ink : KinesisStyle.secondary)
                         .opacity(chosen || hovered != option.value ? 1 : 0.8)
                         .padding(.vertical, 9)
                         .overlay(alignment: .bottom) {
                             if chosen {
-                                Capsule().fill(KinesisStyle.ink).frame(height: 1.5)
+                                Capsule().fill(KinesisStyle.accent).frame(height: 2)
                                     .matchedGeometryEffect(id: "tab", in: tabs)
                             }
                         }
@@ -367,7 +369,8 @@ struct Flash<Content: View>: View {
 struct SectionLabel: View {
     let text: String
     var body: some View {
-        Text(text).font(KinesisType.micro).tracking(0.3).foregroundStyle(KinesisStyle.secondary)
+        Text(text.uppercased()).font(.system(size: 10, weight: .medium, design: .monospaced))
+            .tracking(1.4).foregroundStyle(KinesisStyle.secondary)
             .accessibilityAddTraits(.isHeader)
     }
 }

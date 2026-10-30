@@ -207,7 +207,7 @@ private struct TryItRow: View {
                     }
                     .font(KinesisType.caption)
                     .padding(.horizontal, 12).padding(.vertical, 6)
-                    .foregroundStyle(isDone ? Color.white : KinesisStyle.ink)
+                    .foregroundStyle(isDone ? KinesisStyle.onAccent : KinesisStyle.ink)
                     .background(Capsule().fill(isDone ? KinesisStyle.accent : KinesisStyle.tray))
                     .animation(reduceMotion ? nil : KinesisMotion.settle, value: isDone)
                 }

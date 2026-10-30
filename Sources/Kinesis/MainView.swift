@@ -44,7 +44,10 @@ struct MainView: View {
                         if scrolls {
                             ScrollView { content }.scrollIndicators(.hidden).scrollBounceBehavior(.basedOnSize)
                         } else {
-                            content.frame(maxHeight: .infinity, alignment: .top)
+                            GeometryReader { geometry in
+                                content.frame(width: geometry.size.width, height: geometry.size.height,
+                                              alignment: .topLeading).clipped()
+                            }
                         }
                     }
                 }
@@ -59,7 +62,7 @@ struct MainView: View {
         .frame(minWidth: 920, minHeight: 660)
         .background(Field())
         .foregroundStyle(KinesisStyle.ink)
-        .tint(KinesisStyle.ink)
+        .tint(KinesisStyle.accent)
         .preferredColorScheme(appearance.colorScheme)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: model.showingSetup)
         // At the root, so a pair run can ask for the sign-in from setup or from any page.

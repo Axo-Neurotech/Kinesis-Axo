@@ -390,6 +390,7 @@ final class BandModel: ObservableObject {
     private let controls: any MacControls
     private let pairClient: @Sendable (MetaSession) -> any BandPairClient
     private let sessionStore: any MetaSessionStoring
+    private let bandIdentityExists: (String) -> Bool
     private var enrollSession: MetaSession?
     /// Set when a ceremony HTTP step failed with an auth-class error; the
     /// login sheet appears once the connection has wound down.
@@ -513,6 +514,7 @@ final class BandModel: ObservableObject {
          workspaceNotifications: NotificationCenter = NSWorkspace.shared.notificationCenter,
          pairClient: @escaping @Sendable (MetaSession) -> any BandPairClient = { MetaPairClient(session: $0) },
          sessionStore: any MetaSessionStoring = MetaSessionStore(),
+         bandIdentityExists: @escaping (String) -> Bool = { BandIdentity.exists(for: $0) },
          clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
          cursorPacing: Double = PointerPacer.playbackSeconds,
          cursorFrames: CursorFrames = .display,
@@ -532,6 +534,7 @@ final class BandModel: ObservableObject {
         self.controls = controls
         self.pairClient = pairClient
         self.sessionStore = sessionStore
+        self.bandIdentityExists = bandIdentityExists
         if let data = defaults.data(forKey: "dictationShortcut") {
             dictationShortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data)
         }
@@ -661,7 +664,7 @@ final class BandModel: ObservableObject {
     }
 
     func refreshIdentity() {
-        hasBandIdentity = !selectedAddress.isEmpty && BandIdentity.exists(for: selectedAddress)
+        hasBandIdentity = !selectedAddress.isEmpty && bandIdentityExists(selectedAddress)
         // A different band or a restored identity makes past rejections stale.
         bandRejectsIdentity = false
         connectRejections = 0
@@ -742,7 +745,7 @@ final class BandModel: ObservableObject {
         if selectedAddress.isEmpty {
             pairRoute = .scanning
             run(.scan)
-        } else if BandIdentity.exists(for: selectedAddress) {
+        } else if bandIdentityExists(selectedAddress) {
             startPairConnect()
         } else {
             startPairEnrollment()
@@ -770,7 +773,7 @@ final class BandModel: ObservableObject {
     /// Once a band is on record, its stored identity decides the route: trust
     /// unlocks an enrolled band, anything else runs the ownership ceremony.
     private func routeForSelectedBand() {
-        if BandIdentity.exists(for: selectedAddress) {
+        if bandIdentityExists(selectedAddress) {
             startPairConnect()
         } else {
             startPairEnrollment()

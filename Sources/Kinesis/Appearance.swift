@@ -46,36 +46,45 @@ struct AppearanceMenu: View {
     }
 }
 
-/// Graphite for the ground, the way the band's weave is graphite, and one blue accent.
-/// The band's bronze stays the only warm thing on screen.
+/// Axo's public design tokens: teal fields, sage feedback, snow surfaces, and rose alerts.
+/// Text accents differ by appearance so the same controls stay legible in both modes.
 enum KinesisStyle {
     /// The window is one field of soft tone, lighter at the top. Sheets use `paper`, its middle.
-    static let fieldTop = adaptive(light: NSColor(red: 0.95, green: 0.951, blue: 0.953, alpha: 1), dark: NSColor(red: 0.118, green: 0.123, blue: 0.128, alpha: 1))
-    static let fieldBottom = adaptive(light: NSColor(red: 0.868, green: 0.871, blue: 0.876, alpha: 1), dark: NSColor(red: 0.05, green: 0.053, blue: 0.057, alpha: 1))
-    static let paper = adaptive(light: NSColor(red: 0.918, green: 0.92, blue: 0.924, alpha: 1), dark: NSColor(red: 0.09, green: 0.094, blue: 0.099, alpha: 1))
+    static let fieldTop = adaptive(light: rgb(0xF9F4F5), dark: rgb(0x0A4C52))
+    static let fieldBottom = adaptive(light: rgb(0xF2EEEF), dark: rgb(0x16302F))
+    static let paper = adaptive(light: rgb(0xF9F4F5), dark: rgb(0x0A4C52))
+    static let sidebarTop = adaptive(light: rgb(0x73BA9B, alpha: 0.16), dark: rgb(0x9FD3BB, alpha: 0.035))
+    static let sidebarBottom = adaptive(light: rgb(0x73BA9B, alpha: 0.28), dark: rgb(0x16302F, alpha: 0.3))
     /// The soft light an object sits in: the band, the hand.
-    static let pool = adaptive(light: NSColor(white: 1, alpha: 0.78), dark: NSColor(red: 0.75, green: 0.88, blue: 1.0, alpha: 0.085))
-    static let ink = adaptive(light: NSColor(red: 0.1, green: 0.105, blue: 0.112, alpha: 1), dark: NSColor(red: 0.94, green: 0.946, blue: 0.952, alpha: 1))
-    static let secondary = adaptive(light: NSColor(red: 0.42, green: 0.435, blue: 0.455, alpha: 1), dark: NSColor(red: 0.6, green: 0.62, blue: 0.645, alpha: 1))
+    static let pool = adaptive(light: NSColor(white: 1, alpha: 0.78), dark: rgb(0x9FD3BB, alpha: 0.12))
+    static let ink = adaptive(light: rgb(0x16302F), dark: rgb(0xEAF3F2))
+    static let secondary = adaptive(light: rgb(0x4C5D5B), dark: rgb(0xB8DCD3))
     static let surface = adaptive(light: NSColor(white: 1, alpha: 0.68), dark: NSColor(white: 1, alpha: 0.045))
-    static let line = adaptive(light: NSColor(red: 0.1, green: 0.12, blue: 0.15, alpha: 0.11), dark: NSColor(red: 0.92, green: 0.96, blue: 1.0, alpha: 0.09))
-    static let green = adaptive(light: NSColor(red: 0.22, green: 0.55, blue: 0.36, alpha: 1), dark: NSColor(red: 0.6, green: 0.83, blue: 0.64, alpha: 1))
-    private static let accentLight = NSColor(red: 0.05, green: 0.4, blue: 0.85, alpha: 1)
-    private static let accentDark = NSColor(red: 0.45, green: 0.74, blue: 1.0, alpha: 1)
-    /// Blue: what is live, what was just felt, and the one action that matters.
+    static let line = adaptive(light: rgb(0x0D5C63, alpha: 0.15), dark: rgb(0x9FD3BB, alpha: 0.24))
+    static let green = adaptive(light: rgb(0x2F6B52), dark: rgb(0x9FD3BB))
+    private static let accentLight = rgb(0x0D5C63)
+    private static let accentDark = rgb(0x9FD3BB)
+    /// Teal on snow, mint on teal: selections and sensor feedback.
     static let accent = adaptive(light: accentLight, dark: accentDark)
-    static let warning = adaptive(light: NSColor(red: 0.78, green: 0.2, blue: 0.17, alpha: 1), dark: NSColor(red: 1, green: 0.52, blue: 0.46, alpha: 1))
+    static let onAccent = adaptive(light: rgb(0xFFFFFF), dark: rgb(0x16302F))
+    static let warning = adaptive(light: rgb(0xA34754), dark: rgb(0xEE9AA5))
     /// The tray that holds pills, and the chip that marks the chosen one.
-    static let tray = adaptive(light: NSColor(red: 0.1, green: 0.12, blue: 0.15, alpha: 0.065), dark: NSColor(red: 0.92, green: 0.96, blue: 1.0, alpha: 0.075))
-    static let trayHover = adaptive(light: NSColor(red: 0.1, green: 0.12, blue: 0.15, alpha: 0.105), dark: NSColor(red: 0.92, green: 0.96, blue: 1.0, alpha: 0.12))
-    static let trayStrong = adaptive(light: NSColor(red: 0.1, green: 0.12, blue: 0.15, alpha: 0.18), dark: NSColor(red: 0.92, green: 0.96, blue: 1.0, alpha: 0.2))
-    static let chip = adaptive(light: NSColor(white: 1, alpha: 1), dark: NSColor(red: 0.92, green: 0.96, blue: 1.0, alpha: 0.17))
+    static let tray = adaptive(light: rgb(0x0D5C63, alpha: 0.07), dark: rgb(0x9FD3BB, alpha: 0.09))
+    static let trayHover = adaptive(light: rgb(0x0D5C63, alpha: 0.12), dark: rgb(0x9FD3BB, alpha: 0.15))
+    static let trayStrong = adaptive(light: rgb(0x0D5C63, alpha: 0.2), dark: rgb(0x9FD3BB, alpha: 0.23))
+    static let chip = adaptive(light: rgb(0xFFFFFF), dark: rgb(0x9FD3BB, alpha: 0.19))
 
     /// The light on the hand's fingers, in linear light the way its shader mixes it into the
-    /// skin. On the white hand it is a brighter blue than the accent that text uses.
+    /// skin. Sage keeps the feedback visible on the white hand.
     static func glow(dark: Bool) -> SIMD3<Float> {
-        let color = dark ? accentDark : NSColor(red: 0.16, green: 0.56, blue: 1.0, alpha: 1)
+        let color = dark ? accentDark : rgb(0x73BA9B)
         return SIMD3(Float(pow(color.redComponent, 2.2)), Float(pow(color.greenComponent, 2.2)), Float(pow(color.blueComponent, 2.2)))
+    }
+
+    private static func rgb(_ hex: UInt32, alpha: CGFloat = 1) -> NSColor {
+        NSColor(red: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
     }
 
     private static func adaptive(light: NSColor, dark: NSColor) -> Color {

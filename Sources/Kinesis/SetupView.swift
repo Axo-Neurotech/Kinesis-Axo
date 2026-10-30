@@ -115,10 +115,7 @@ struct SetupView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Setup step \(step + 1) of \(names.count): \(names[step])")
             HStack {
-                HStack(spacing: 10) {
-                    KinesisMark(size: CGSize(width: 30, height: 28))
-                    Text("kinesis").font(.system(size: 19, weight: .medium, design: .rounded)).tracking(-0.6)
-                }
+                AxoBrandLockup()
                 Spacer()
                 AppearanceMenu(compact: true).foregroundStyle(KinesisStyle.secondary).padding(.trailing, 16)
                 Button("set up later") { model.finishSetup() }

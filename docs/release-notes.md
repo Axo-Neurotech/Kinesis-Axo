@@ -1,3 +1,7 @@
+# local 0.5.0, build 6.8
+
+adds Axo Neurotech's original mark and shared brand palette across the sidebar, setup, navigation, controls, hand feedback and sensor plots. light mode uses snow and sage; dark mode uses teal and mint with rose alerts. branding is bundled and static, with no network requests or new animation timers. gesture mappings and connection behavior are unchanged.
+
 # local 0.5.0, build 6.7
 
 adds per-gesture custom keyboard shortcuts, configurable macOS/ChatGPT Dictation, a saved dot-chat destination, and a separate **Send in ChatGPT** action. Dictation and Send have independent shortcuts; Send only acts while ChatGPT is in front and remains an explicit user gesture. shortcuts and chat destinations are local preferences, not bundled account data.
