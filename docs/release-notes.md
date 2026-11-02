@@ -1,3 +1,13 @@
+# local 0.5.0, build 6.13
+
+fixes Meta sign-in pop-ups by preserving WebKit's supplied configuration and relationship to the opening page. sign-in windows handle validated return links directly and close when sign-in completes or is cancelled.
+
+rediscovers an unclaimed band before enrollment and after Meta sign-in, so a changed Bluetooth identifier does not leave setup waiting on the old identifier. discovery stays targeted to the remembered band, preserves the saved Meta session, and stops if the target is absent or ambiguous. existing pairing keys are reused when available.
+
+sign-in failures identify the exchange, HTTP status and validated numeric error codes without exposing response bodies, credentials or contact information. the sanitized failure remains visible after closing sign-in. retry starts a fresh session, and cancelled attempts cannot save a session later.
+
+109 focused tests passed, followed by all seven rediscovery tests after the final recovery-message adjustment. live Meta sign-in, new-band enrollment, saved-key reconnect, motion input, gesture reception and Accessibility approval were verified on macOS.
+
 # local 0.5.0, build 6.8
 
 adds Axo Neurotech's original mark and shared brand palette across the sidebar, setup, navigation, controls, hand feedback and sensor plots. light mode uses snow and sage; dark mode uses teal and mint with rose alerts. branding is bundled and static, with no network requests or new animation timers. gesture mappings and connection behavior are unchanged.

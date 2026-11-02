@@ -69,7 +69,8 @@ struct MainView: View {
         .sheet(isPresented: Binding(get: { model.enrollmentStage == .login },
                                     set: { if !$0 { model.cancelEnrollment() } })) {
             MetaLoginView(onSession: { model.enroll(session: $0) },
-                          onCancel: { model.cancelEnrollment() })
+                          onCancel: { model.cancelEnrollment() },
+                          onFailure: { model.error = $0 })
         }
     }
 

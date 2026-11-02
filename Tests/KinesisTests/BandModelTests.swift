@@ -1206,7 +1206,7 @@ private struct FakePairClient: BandPairClient {
     let client = FakePairClient()
     let store = SavedSessionStore()
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in client }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in client }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     // A remembered band without a stored identity still needs claiming.
     #expect(model.showsPairAction && model.canPair && !model.hasBandIdentity)
     model.pairBand()
@@ -1215,8 +1215,11 @@ private struct FakePairClient: BandPairClient {
     #expect(!model.canPair && model.showsPairAction && model.pairProgressText == nil)
     model.enroll(session: MetaSession(accessToken: "token", userID: "1"))
     #expect(store.saved?.accessToken == "token")
-    // The factory-fresh band goes straight to the ownership ceremony.
-    #expect(connection.requests == ["enroll test-band"])
+    // Refresh the unbonded identifier after the interactive sign-in, then claim it.
+    #expect(connection.requests == ["scan"] && model.enrollmentStage == .idle)
+    connection.send(.devices([remembered]))
+    connection.finish()
+    #expect(connection.requests == ["scan", "enroll test-band"])
     #expect(model.enrollmentStage == .pairing && model.pairInProgress)
     #expect(model.pairProgressText == "claiming your band…")
     connection.send(.ceremonyStage("claiming the band"))
@@ -1230,7 +1233,7 @@ private struct FakePairClient: BandPairClient {
     try await waitUntil { connection.ceremonyCompletions.count == 2 }
     // Streams ready finish the ceremony; the pipeline reconnects to settle.
     connection.send(.connected)
-    try await waitUntil { connection.requests == ["enroll test-band", "connect test-band"] }
+    try await waitUntil { connection.requests == ["scan", "enroll test-band", "connect test-band"] }
     #expect(model.pairProgressText == "connecting to your band…" && model.enrollmentStage == .idle)
     // The settling connect completes the run: the band stays managed.
     connection.send(.connected)
@@ -1249,15 +1252,18 @@ private struct FakePairClient: BandPairClient {
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "saved", userID: "7")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in client }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in client }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     #expect(model.hasSavedMetaSession)
     model.pairBand()
-    // The saved session claims the band straight away; no sign-in sheet.
-    #expect(model.enrollmentStage == .pairing && connection.requests == ["enroll test-band"])
+    // Reuse the saved session while refreshing the unbonded Bluetooth identifier.
+    #expect(model.enrollmentStage == .idle && connection.requests == ["scan"])
+    connection.send(.devices([remembered]))
+    connection.finish()
+    #expect(model.enrollmentStage == .pairing && connection.requests == ["scan", "enroll test-band"])
     connection.send(.ceremonyStage("claiming the band"))
     #expect(model.enrollmentStage == .working("claiming the band"))
     connection.send(.connected)
-    try await waitUntil { connection.requests == ["enroll test-band", "connect test-band"] }
+    try await waitUntil { connection.requests == ["scan", "enroll test-band", "connect test-band"] }
     connection.send(.connected)
     try await waitUntil { !model.pairInProgress }
     #expect(model.wantsConnection && !model.showsPairAction)
@@ -1268,15 +1274,13 @@ private struct FakePairClient: BandPairClient {
 @Test @MainActor func pairBandRetriesAMismatchOnceThenEnrollsWithTheSavedSession() async throws {
     let defaults = MemoryDefaults()
     let band = "test-\(UUID().uuidString)"
-    defer { BandIdentity.delete(for: band) }
     defaults.set(try JSONEncoder().encode(BandDevice(address: band, name: "Meta Band")), forKey: "band")
-    try BandIdentity.generate(for: band)
     let connection = RecordedConnection()
     let client = FakePairClient()
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "saved", userID: "7")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in client }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in client }, sessionStore: store, bandIdentityExists: { _ in true }, clock: { 100 })
     // A stored identity means the paired surface: no pairing action.
     #expect(model.hasBandIdentity && !model.showsPairAction)
     model.pairBand()
@@ -1303,13 +1307,11 @@ private struct FakePairClient: BandPairClient {
 @Test @MainActor func aPairFailureShowsOneLowercaseLineAndTheButtonRetries() async throws {
     let defaults = MemoryDefaults()
     let band = "test-\(UUID().uuidString)"
-    defer { BandIdentity.delete(for: band) }
     defaults.set(try JSONEncoder().encode(BandDevice(address: band, name: "Meta Band")), forKey: "band")
-    try BandIdentity.generate(for: band)
     let connection = RecordedConnection()
     let store = SavedSessionStore()
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: store, bandIdentityExists: { _ in true }, clock: { 100 })
     model.pairBand()
     #expect(connection.requests == ["connect \(band)"])
     // A plain failure ends the run with one lowercase line, no auto-retry.
@@ -1330,15 +1332,17 @@ private struct FakePairClient: BandPairClient {
 @Test @MainActor func anOwnershipRejectionSurfacesTheDedicatedLineUnderThePairButton() async throws {
     let defaults = MemoryDefaults()
     let band = "test-\(UUID().uuidString)"
-    defer { BandIdentity.delete(for: band) }
     defaults.set(try JSONEncoder().encode(BandDevice(address: band, name: "Meta Band")), forKey: "band")
     let connection = RecordedConnection()
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "saved", userID: "7")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     model.pairBand()
-    try await waitUntil { connection.requests == ["enroll \(band)"] }
+    #expect(connection.requests == ["scan"])
+    connection.send(.devices([BandDevice(address: band, name: "Meta Band")]))
+    connection.finish()
+    try await waitUntil { connection.requests == ["scan", "enroll \(band)"] }
     // The band reports 0x1042: its stored owner is a different meta account.
     connection.finish(error: BandProtocolError(OwnershipCeremony.failureMessage(0x1042)))
     try await waitUntil { !model.pairInProgress }
@@ -1353,7 +1357,7 @@ private struct FakePairClient: BandPairClient {
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "saved", userID: "7")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     #expect(model.showsPairAction && model.canPair)
     model.pairBand()
     // Scanning is the claim-needing flow, so the hold-button hint shows.
@@ -1377,7 +1381,7 @@ private struct FakePairClient: BandPairClient {
     let defaults = MemoryDefaults()
     let connection = RecordedConnection()
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: SavedSessionStore(), clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: SavedSessionStore(), bandIdentityExists: { _ in false }, clock: { 100 })
     model.pairBand()
     connection.send(.devices([]))
     connection.finish()
@@ -1396,14 +1400,16 @@ private struct FakePairClient: BandPairClient {
 @Test @MainActor func aPairRunReportsItsStagesTheSystemPairingRequestAndTheClaimBeat() async throws {
     let defaults = MemoryDefaults()
     defaults.set(try JSONEncoder().encode(BandDevice(address: "test-band", name: "Meta Band")), forKey: "band")
-    defer { BandIdentity.delete(for: "test-band") }
     let connection = RecordedConnection()
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "token", userID: "1")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     #expect(model.pairing.headline == "setup incomplete" && model.pairing.current == nil)
     model.pairBand()
+    #expect(model.pairing.current == .find && connection.requests == ["scan"])
+    connection.send(.devices([BandDevice(address: "test-band", name: "Meta Band")]))
+    connection.finish()
     #expect(model.pairing.current == .claim && model.pairing.claimProgress == 0 && !model.pairing.offersOtherAccount)
     // macOS asks to pair before the band answers anything.
     connection.send(.systemPairingPending)
@@ -1413,7 +1419,7 @@ private struct FakePairClient: BandPairClient {
     #expect(model.pairing.claimProgress == 4)
     connection.send(.connected)
     #expect(!model.awaitingSystemPairing)
-    try await waitUntil { connection.requests == ["enroll test-band", "connect test-band"] }
+    try await waitUntil { connection.requests == ["scan", "enroll test-band", "connect test-band"] }
     // The settling reconnect is the last step of this run.
     #expect(model.pairing.current == .ready && !model.justPaired)
     connection.send(.connected)
@@ -1428,7 +1434,7 @@ private struct FakePairClient: BandPairClient {
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "token", userID: "1")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     model.pairBand()
     connection.send(.devices([]))
     connection.finish()
@@ -1460,7 +1466,7 @@ private struct FakePairClient: BandPairClient {
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "token", userID: "1")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     model.pairBand()
     #expect(model.pairing.current == .find && connection.requests == ["scan"])
     model.cancelPairing()
@@ -1475,7 +1481,7 @@ private struct FakePairClient: BandPairClient {
     let defaults = MemoryDefaults()
     let connection = RecordedConnection()
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: SavedSessionStore(), clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: SavedSessionStore(), bandIdentityExists: { _ in false }, clock: { 100 })
     model.pairBand()
     connection.send(.devices([BandDevice(address: "found-band", name: "Meta Band 00BC", rssi: -40)]))
     connection.finish()
@@ -1626,7 +1632,7 @@ private struct FakePairClient: BandPairClient {
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "old", userID: "1")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     #expect(model.hasSavedMetaSession)
     model.switchMetaAccount()
     #expect(!model.hasSavedMetaSession && store.saved == nil && store.deletions == 1)
@@ -1643,9 +1649,12 @@ private struct FakePairClient: BandPairClient {
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "old", userID: "1")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in FakePairClient() }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in FakePairClient() }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     model.pairBand()
-    #expect(connection.requests == ["enroll test-band"])
+    #expect(connection.requests == ["scan"])
+    connection.send(.devices([BandDevice(address: "test-band", name: "Meta Band")]))
+    connection.finish()
+    #expect(connection.requests == ["scan", "enroll test-band"])
     let identity = BandIdentityInfo(deviceCertificate: Data([1]), serial: "S", secondaryCertificate: Data([2]))
     connection.send(.ceremonyHTTP(.pairRequest(CeremonyPairRequestData(
         identity: identity, nonce: Data(repeating: 3, count: 16), appPublicKey: Data(repeating: 4, count: 64)))))
@@ -1657,10 +1666,13 @@ private struct FakePairClient: BandPairClient {
     #expect(model.enrollmentStage == .login && model.pairInProgress)
     // A fresh account session restarts the claim; the band binds to it.
     model.enroll(session: MetaSession(accessToken: "fresh", userID: "2"))
+    #expect(connection.requests.last == "scan")
+    connection.send(.devices([BandDevice(address: "test-band", name: "Meta Band")]))
+    connection.finish()
     #expect(store.saved?.accessToken == "fresh")
-    try await waitUntil { connection.requests == ["enroll test-band", "enroll test-band"] }
+    try await waitUntil { connection.requests == ["scan", "enroll test-band", "scan", "enroll test-band"] }
     connection.send(.connected)
-    try await waitUntil { connection.requests.count == 3 }
+    try await waitUntil { connection.requests.count == 5 }
     connection.send(.connected)
     try await waitUntil { !model.pairInProgress }
     #expect(model.enrollmentStage == .idle && model.wantsConnection)
@@ -1675,9 +1687,12 @@ private struct FakePairClient: BandPairClient {
     let store = SavedSessionStore()
     store.saved = MetaSession(accessToken: "stale", userID: "7")
     let model = BandModel(defaults: defaults, connection: connection, controls: RecordingControls(),
-                          pairClient: { _ in client }, sessionStore: store, clock: { 100 })
+                          pairClient: { _ in client }, sessionStore: store, bandIdentityExists: { _ in false }, clock: { 100 })
     model.pairBand()
-    #expect(model.enrollmentStage == .pairing && connection.requests == ["enroll test-band"])
+    #expect(connection.requests == ["scan"])
+    connection.send(.devices([BandDevice(address: "test-band", name: "Meta Band")]))
+    connection.finish()
+    #expect(model.enrollmentStage == .pairing && connection.requests == ["scan", "enroll test-band"])
     let identity = BandIdentityInfo(deviceCertificate: Data([1]), serial: "S", secondaryCertificate: Data([2]))
     connection.send(.ceremonyHTTP(.pairRequest(CeremonyPairRequestData(
         identity: identity, nonce: Data(repeating: 3, count: 16), appPublicKey: Data(repeating: 4, count: 64)))))
@@ -1687,8 +1702,11 @@ private struct FakePairClient: BandPairClient {
     // Signing in again saves the fresh session and restarts the ceremony:
     // the old state machine lived in the closed connection.
     model.enroll(session: MetaSession(accessToken: "fresh", userID: "7"))
+    #expect(connection.requests.last == "scan")
+    connection.send(.devices([BandDevice(address: "test-band", name: "Meta Band")]))
+    connection.finish()
     #expect(model.enrollmentStage == .pairing)
-    #expect(connection.requests == ["enroll test-band", "enroll test-band"])
+    #expect(connection.requests == ["scan", "enroll test-band", "scan", "enroll test-band"])
     #expect(store.saved?.accessToken == "fresh" && model.hasSavedMetaSession)
     await model.shutdown()
 }

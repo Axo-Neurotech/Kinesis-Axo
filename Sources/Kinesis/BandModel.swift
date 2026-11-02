@@ -397,6 +397,9 @@ final class BandModel: ObservableObject {
     private var pendingRelogin = false
     private var connectRejections = 0
     private var pairAttempts = 0
+    /// An unclaimed band can change its Bluetooth identifier during a long sign-in.
+    /// Keep the intended band while discovering its current advertisement.
+    private var enrollmentScanTarget: BandDevice?
     private var activeOperation: BandOperation?
     private var router = GestureRouter()
     private var gate = ActionGate()
@@ -614,6 +617,7 @@ final class BandModel: ObservableObject {
                 self.sleeping = true
                 self.retry?.cancel()
                 self.scanPending = false
+                self.cancelEnrollmentScan()
                 self.live = false
                 self.suspendActions()
                 self.connection.stop()
@@ -747,8 +751,34 @@ final class BandModel: ObservableObject {
             run(.scan)
         } else if bandIdentityExists(selectedAddress) {
             startPairConnect()
+        } else if hasSavedMetaSession {
+            scanForEnrollmentTarget()
         } else {
             startPairEnrollment()
+        }
+    }
+
+    private func cancelEnrollmentScan() {
+        guard enrollmentScanTarget != nil else { return }
+        enrollmentScanTarget = nil
+        if pairRoute == .scanning { pairRoute = .none }
+    }
+
+    private func scanForEnrollmentTarget() {
+        guard let target = devices.first(where: { $0.address == selectedAddress }) else {
+            pairRoute = .none
+            failPair("the saved band could not be identified. find your band and try again.", at: .find)
+            return
+        }
+        disconnect()
+        enrollmentScanTarget = target
+        enrollmentStage = .idle
+        pairRoute = .scanning
+        if busy {
+            scanPending = true
+            phase = "Disconnecting before scan…"
+        } else {
+            run(.scan)
         }
     }
 
@@ -793,7 +823,7 @@ final class BandModel: ObservableObject {
         guard enrollmentStage == .login else { return }
         sessionStore.saveSession(session)
         hasSavedMetaSession = true
-        startEnrollment(with: session)
+        scanForEnrollmentTarget()
     }
 
     func cancelEnrollment() {
@@ -831,6 +861,7 @@ final class BandModel: ObservableObject {
     }
 
     func disconnect() {
+        cancelEnrollmentScan()
         wantsConnection = false
         scanPending = false
         retry?.cancel()
@@ -1157,7 +1188,9 @@ final class BandModel: ObservableObject {
         suspendActions()
         let shouldScan = scanPending && !quitting && !sleeping
         scanPending = false
-        if routing {
+        if routing, shouldScan, pairRoute == .scanning {
+            run(.scan)
+        } else if routing {
             advancePairRoute(failure, operation: operation)
         } else if shouldScan {
             run(.scan)
@@ -1175,8 +1208,29 @@ final class BandModel: ObservableObject {
         case .none:
             break
         case .scanning:
+            let target = enrollmentScanTarget
+            enrollmentScanTarget = nil
             pairRoute = .none
             if let failure { failPair(failure.localizedDescription, at: step); return }
+            if let target {
+                let found = devices.filter { discoveredAddresses.contains($0.address) }
+                let sameName = found.filter { $0.name == target.name }
+                let refreshed = found.first(where: { $0.address == target.address })
+                    ?? (sameName.count == 1 ? sameName.first : nil)
+                guard let refreshed else {
+                    emptyScans = sameName.count > 1 ? 0 : emptyScans + 1
+                    let message = sameName.count > 1
+                        ? "more than one band has the saved name. keep only your intended band in pairing mode, then try again."
+                        : "couldn’t find the saved band. put that band in pairing mode, keep it nearby, then try again."
+                    failPair(message, at: .find)
+                    return
+                }
+                selectedAddress = refreshed.address
+                emptyScans = 0
+                // This advertisement was just verified; do not start another refresh scan.
+                routeForSelectedBand()
+                return
+            }
             guard !selectedAddress.isEmpty else {
                 emptyScans += 1
                 phase = "Disconnected"

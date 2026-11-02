@@ -1,6 +1,5 @@
 import KinesisCore
 import SwiftUI
-import WebKit
 
 /// The Meta sign-in sheet. It first says what is about to happen and why.
 /// Nothing contacts Meta until the person continues. It then runs the tokens
@@ -9,11 +8,15 @@ import WebKit
 struct MetaLoginView: View {
     var onSession: (MetaSession) -> Void
     var onCancel: () -> Void
-    enum Phase { case intro, querying, signingIn, exchanging }
+    /// Keeps the already-sanitized failure visible after this sheet is closed.
+    var onFailure: (String?) -> Void = { _ in }
+    enum Phase { case intro, querying, signingIn, exchanging, failed }
     @State private var phase: Phase = .intro
     @State private var error: String?
     @State private var tokens: MetaAuth.SSOTokens?
     @State private var host = "auth.meta.com"
+    @State private var attempt = UUID()
+    @State private var task: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,6 +24,7 @@ struct MetaLoginView: View {
         }
         .frame(width: 640, height: 620)
         .background(KinesisStyle.paper).foregroundStyle(KinesisStyle.ink)
+        .onDisappear { invalidateAttempt() }
     }
 
     private var intro: some View {
@@ -40,7 +44,7 @@ struct MetaLoginView: View {
             Spacer(minLength: 0)
             HStack(spacing: 14) {
                 Spacer()
-                Button("not now") { onCancel() }.buttonStyle(.plain)
+                Button("not now") { cancelSignIn() }.buttonStyle(.plain)
                     .font(.system(size: 12)).foregroundStyle(KinesisStyle.secondary)
                 Button { begin() } label: {
                     HStack(spacing: 22) {
@@ -71,7 +75,7 @@ struct MetaLoginView: View {
                 Image(systemName: "lock.fill").font(.system(size: 10))
                 Text(host).font(.system(size: 12, weight: .medium))
                 Spacer()
-                Button("cancel") { onCancel() }
+                Button("cancel") { cancelSignIn() }
                     .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(KinesisStyle.secondary)
             }.foregroundStyle(KinesisStyle.secondary)
                 .padding(.horizontal, 22).padding(.vertical, 14)
@@ -82,16 +86,23 @@ struct MetaLoginView: View {
                 case .querying: waiting("opening meta’s sign-in…")
                 case .signingIn:
                     if let url = tokens?.authEntryURL {
-                        AuthWebView(url: url, onHost: { host = $0 }) { handleCallback($0) }
+                        MetaAuthWebView(url: url, onHost: { [current = attempt] value in
+                            guard attempt == current else { return }
+                            host = value
+                        }) { [current = attempt] callback in
+                            guard attempt == current else { return }
+                            handleCallback(callback)
+                        }
                     }
                 case .exchanging: waiting("finishing the sign-in…")
+                case .failed: waiting("sign-in didn’t finish. try again to start a fresh session.")
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             if let error {
                 HStack {
                     ErrorNote(text: error)
                     Spacer()
-                    if phase == .querying {
+                    if phase == .querying || phase == .failed {
                         Button("try again") { begin() }.buttonStyle(KinesisButtonStyle())
                     }
                 }.padding(.horizontal, 22).padding(.vertical, 12)
@@ -107,91 +118,76 @@ struct MetaLoginView: View {
     }
 
     private func begin() {
+        invalidateAttempt()
+        let current = attempt
         error = nil
+        onFailure(nil)
+        tokens = nil
+        host = "auth.meta.com"
         phase = .querying
-        Task {
+        task = Task {
             do {
-                tokens = try await MetaAuth.tokensQuery()
+                let result = try await MetaAuth.tokensQuery()
+                guard !Task.isCancelled, attempt == current else { return }
+                tokens = result
                 phase = .signingIn
             } catch {
+                guard !Task.isCancelled, attempt == current else { return }
                 self.error = error.localizedDescription
+                onFailure(self.error)
+                tokens = nil
+                phase = .failed
             }
         }
     }
 
+    private func invalidateAttempt() {
+        task?.cancel()
+        task = nil
+        attempt = UUID()
+        tokens = nil
+    }
+
+    private func cancelSignIn() {
+        invalidateAttempt()
+        onCancel()
+    }
+
     private func handleCallback(_ url: URL) {
         guard phase == .signingIn, let tokens else { return }
+        guard MetaAuth.isLoginCallback(url) else {
+            error = "meta returned an unexpected sign-in redirect. try again."
+            onFailure(error)
+            self.tokens = nil
+            phase = .failed
+            return
+        }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let token = items.first(where: { $0.name == "token" })?.value
         let blob = items.first(where: { $0.name == "blob" })?.value
         guard let blob, !blob.isEmpty, MetaAuth.callbackMatches(token, nativeSSOToken: tokens.nativeSSOToken) else {
             error = "meta didn't confirm this sign-in. try again."
+            onFailure(error)
+            self.tokens = nil
+            phase = .failed
             return
         }
         phase = .exchanging
-        Task {
+        let current = attempt
+        task = Task {
             do {
                 let frl = try await MetaAuth.decryptBlob(blob, requestToken: tokens.nativeSSOToken)
-                onSession(try await MetaAuth.login(frlAccessToken: frl))
+                guard !Task.isCancelled, attempt == current else { return }
+                let session = try await MetaAuth.login(frlAccessToken: frl)
+                guard !Task.isCancelled, attempt == current else { return }
+                onSession(session)
             } catch {
+                guard !Task.isCancelled, attempt == current else { return }
                 self.error = error.localizedDescription
-                phase = .signingIn
+                onFailure(self.error)
+                self.tokens = nil
+                phase = .failed
             }
-        }
-    }
-}
-
-private struct AuthWebView: NSViewRepresentable {
-    let url: URL
-    var onHost: (String) -> Void = { _ in }
-    let onCallback: (URL) -> Void
-
-    func makeNSView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        let webview = WKWebView(frame: .zero, configuration: configuration)
-        webview.navigationDelegate = context.coordinator
-        webview.uiDelegate = context.coordinator
-        webview.load(URLRequest(url: url))
-        return webview
-    }
-
-    func updateNSView(_ webview: WKWebView, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(onHost: onHost, onCallback: onCallback) }
-
-    @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-        let onHost: (String) -> Void
-        let onCallback: (URL) -> Void
-        weak var webview: WKWebView?
-
-        init(onHost: @escaping (String) -> Void, onCallback: @escaping (URL) -> Void) {
-            self.onHost = onHost
-            self.onCallback = onCallback
-        }
-
-        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            if let host = webView.url?.host { onHost(host) }
-        }
-
-        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-                     decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-            guard let url = action.request.url else { decisionHandler(.cancel); return }
-            let text = url.absoluteString
-            // The login finishes with a custom-scheme redirect that carries the
-            // validated token and the encrypted blob.
-            if url.scheme?.lowercased() == "fb-viewapp" || text.contains("frl_login") {
-                decisionHandler(.cancel)
-                onCallback(url)
-            } else {
-                decisionHandler(url.scheme?.lowercased() == "https" || text == "about:blank" ? .allow : .cancel)
-            }
-        }
-
-        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
-                     for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if action.targetFrame == nil { webView.load(action.request) }
-            return nil
         }
     }
 }

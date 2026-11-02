@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreFoundation
 import Foundation
 
 /// The Meta account session the graph routes require. `deviceID` is the
@@ -31,6 +32,19 @@ struct MetaAuthError: LocalizedError {
 /// The chain itself never writes; the resulting session persists only through
 /// `MetaSessionStore`.
 enum MetaAuth {
+    /// Only fixed stage labels and numeric status codes may enter sign-in diagnostics.
+    enum Step: String, CaseIterable, Sendable {
+        case tokensQuery, decryptBlob, accountLogin
+
+        var label: String {
+            switch self {
+            case .tokensQuery: "opening sign-in"
+            case .decryptBlob: "confirming browser sign-in"
+            case .accountLogin: "creating the band account session"
+            }
+        }
+    }
+
     // Meta's own client identifiers, the same in every copy of Meta's apps. They name the
     // app that asks, not a person. They are not secrets, and no account or session is in them.
     static let frlClient = "FRL|388177446008673|083800dd7efbbd42eab18c9886d79c18"
@@ -55,7 +69,7 @@ enum MetaAuth {
     static func tokensQuery() async throws -> SSOTokens {
         let lsd = makeLSD()
         let fields = [("access_token", frlClient), ("lsd", lsd), ("jazoest", jazoest(lsd))]
-        let json = try await post(tokensQueryURL, multipart: fields)
+        let json = try await post(tokensQueryURL, step: .tokensQuery, multipart: fields)
         guard let native = json["native_sso_token"] as? String, !native.isEmpty,
               let etoken = json["native_sso_etoken"] as? String, !etoken.isEmpty else {
             throw MetaAuthError(message: "meta didn't return sign-in tokens. try again.")
@@ -77,12 +91,22 @@ enum MetaAuth {
         return difference == 0 && token.count == expected.count
     }
 
+    static func isLoginCallback(_ url: URL) -> Bool {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              ["fb-viewapp", "oculus"].contains(parts.scheme?.lowercased() ?? ""),
+              parts.host?.lowercased() == "frl_login",
+              parts.path.isEmpty || parts.path == "/",
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              parts.fragment == nil else { return false }
+        return true
+    }
+
     /// Step 3: decrypt the login blob into the FRL access token.
     static func decryptBlob(_ blob: String, requestToken: String) async throws -> String {
         let lsd = makeLSD()
         let fields = [("blob", blob), ("request_token", requestToken), ("access_token", frlClient),
                       ("lsd", lsd), ("jazoest", jazoest(lsd))]
-        let json = try await post(blobsDecryptURL, multipart: fields)
+        let json = try await post(blobsDecryptURL, step: .decryptBlob, multipart: fields)
         guard let token = json["access_token"] as? String, !token.isEmpty else {
             throw MetaAuthError(message: "meta didn't confirm the sign-in. try again.")
         }
@@ -99,7 +123,7 @@ enum MetaAuth {
                       ("generate_session_cookies", "1"),
                       ("generate_analytics_claim", "1"),
                       ("method", "POST")]
-        let json = try await post(loginURL, form: fields,
+        let json = try await post(loginURL, step: .accountLogin, form: fields,
                                   headers: ["Authorization": "OAuth " + arClient])
         let userID = (json["user_id"] as? String) ?? (json["user_id"] as? NSNumber)?.stringValue
         guard let token = json["access_token"] as? String, !token.isEmpty,
@@ -143,41 +167,64 @@ enum MetaAuth {
 
     // MARK: - transport
 
-    private static func post(_ url: URL, multipart fields: [(String, String)]) async throws -> [String: Any] {
+    private static func post(_ url: URL, step: Step, multipart fields: [(String, String)]) async throws -> [String: Any] {
         let boundary = "kinesis.form.\(UUID().uuidString)"
         let headers = ["Content-Type": "multipart/form-data; boundary=\(boundary)",
                        "Accept": "application/json",
                        "Origin": "https://auth.meta.com"]
-        return try await post(url, headers: headers,
+        return try await post(url, step: step, headers: headers,
                               body: multipartBody(fields: fields, boundary: boundary))
     }
 
-    private static func post(_ url: URL, form fields: [(String, String)],
+    private static func post(_ url: URL, step: Step, form fields: [(String, String)],
                              headers: [String: String]) async throws -> [String: Any] {
         var headers = headers
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         headers["Accept"] = "application/json"
-        return try await post(url, headers: headers, body: urlForm(fields: fields))
+        return try await post(url, step: step, headers: headers, body: urlForm(fields: fields))
     }
 
-    private static func post(_ url: URL, headers: [String: String], body: Data) async throws -> [String: Any] {
+    private static func post(_ url: URL, step: Step, headers: [String: String], body: Data) async throws -> [String: Any] {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.httpMethod = "POST"
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         request.httpBody = body
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        guard status == 200, let json else {
-            throw MetaAuthError(message: "meta sign-in failed (http \(status)). try again.")
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError {
+            if error.code == .cancelled { throw CancellationError() }
+            throw MetaAuthError(message: "meta sign-in failed while \(step.label) (network \(error.code.rawValue)). try again.")
+        } catch {
+            throw MetaAuthError(message: "meta sign-in failed while \(step.label). try again.")
         }
-        if json["error"] != nil {
-            let error = json["error"] as? [String: Any]
-            let code = error?["code"] as? Int
-            let subcode = error?["error_subcode"] as? Int
-            throw MetaAuthError(message: "meta sign-in failed (code \(code.map(String.init) ?? "-"), subcode \(subcode.map(String.init) ?? "-")). try again.")
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        return try responseJSON(data: data, status: status, step: step)
+    }
+
+    /// Error bodies may echo credentials. Read only bounded integer codes; never include
+    /// response messages, headers, URLs, or raw payloads in a diagnostic.
+    static func responseJSON(data: Data, status: Int, step: Step) throws -> [String: Any] {
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard status == 200, let json, json["error"] == nil else {
+            let error = json?["error"] as? [String: Any]
+            var details = ["http \(status)"]
+            if let code = diagnosticCode(error?["code"]) { details.append("code \(code)") }
+            if let subcode = diagnosticCode(error?["error_subcode"]) { details.append("subcode \(subcode)") }
+            throw MetaAuthError(message: "meta sign-in failed while \(step.label) (\(details.joined(separator: ", "))). try again.")
         }
         return json
+    }
+
+    private static func diagnosticCode(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: number.objCType)),
+              number.doubleValue >= -Double(Int32.max), number.doubleValue <= Double(Int32.max) else { return nil }
+        return number.intValue
     }
 }
 
