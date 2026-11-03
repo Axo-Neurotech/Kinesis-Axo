@@ -1,3 +1,27 @@
+# local 0.5.0, build 6.22
+
+handwriting settings and configuration reads now share one generic control service. live EMG uses that service as well, rather than opening a separate configuration service. EMG changes cannot interrupt a model operation. model failures name the failed step, and matched service rejections start restoration immediately instead of waiting for a timeout.
+
+54 focused regression tests passed across legacy and modern encryption profiles. on updated band 005M, live EMG configured at 2,048 Hz and delivered samples, and the wearer confirmed correct handwriting text in Kinesis. normal-mode restoration and enabled Mac controls were verified afterward. simultaneous EMG and handwriting under sustained load was not verified.
+
+# local 0.5.0, build 6.20
+
+opens the input channel advertised by the band on each connection, rather than requiring channel 255. after its software update, band 005M advertised channel 129, which the old check rejected before enrollment could begin. the parser accepts only a two-byte little-endian value in the Bluetooth LE dynamic range and retains support for legacy channel 255.
+
+supports the newer band's verified AirShield scheme 26, including its key derivation, authenticated packet prefix, full-block padding and tagged service channels. a peer that offers 27 may reply with 26 or 27 while the app continues to send its verified Enable 26. the peer-27 reply was checked against a live authenticated response from updated band 005M. legacy scheme 3 retains its original packet bytes; mismatched keys, unknown schemes and unauthenticated packets remain rejected.
+
+# local 0.5.0, build 6.17
+
+uses Axo's bundled teal-and-white mark for the macOS app icon.
+
+finds handwriting controls by their exact names instead of assuming the same setting numbers on every firmware. bounded discovery stops for missing, ambiguous or incomplete control descriptions. the band's original typed values are checked before changing its model, and restoration uses the discovered controls and verified readback.
+
+handwriting failures identify the operation that failed. diagnostic logs describe only response field numbers and wire types, without raw payloads, setting values or text.
+
+reads bounded model identifiers from the existing device-info reply. optional or malformed metadata cannot interrupt the normal connection. the new band advertised gesture and wake models but no handwriting model; a band software update must be checked before the alternative handwriting API can be validated.
+
+44 focused handwriting tests passed. on the new band, live discovery found controls 19/20, but reading the model selector returned a different value representation from the supported enum schema. handwriting remains unavailable on that firmware; the app refuses the unsupported operation before changing model settings.
+
 # local 0.5.0, build 6.13
 
 fixes Meta sign-in pop-ups by preserving WebKit's supplied configuration and relationship to the opening page. sign-in windows handle validated return links directly and close when sign-in completes or is cancelled.

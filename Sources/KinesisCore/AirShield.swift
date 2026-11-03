@@ -8,18 +8,36 @@ public struct BandProtocolError: LocalizedError {
     public var errorDescription: String? { message }
 }
 
+/// Only the two band schemes verified against hardware are supported.
+enum AirShieldScheme: UInt64 {
+    case scheme3 = 3, scheme26 = 26
+
+    var macPrefix: Data { self == .scheme26 ? Data([2, 2, 0, 0]) : Data() }
+}
+
 struct AirShieldKeys {
     let encryption: SymmetricKey
     let mac: SymmetricKey
 
-    // Only the parameter-3 exchange has been verified on this band.
-    init(secret: Data, challenge: Data, seed: Data) throws {
+    init(secret: Data, challenge: Data, seed: Data, scheme: AirShieldScheme = .scheme3) throws {
         guard secret.count == 32, challenge.count == 16, seed.count == 32 else {
             throw BandProtocolError("Invalid AirShield key material")
         }
-        let hashed = Data(SHA256.hash(data: secret))
-        encryption = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: hashed),
-            salt: Data(SHA256.hash(data: hashed + challenge + seed)), info: Data("AirShield".utf8), outputByteCount: 32)
+        let material: Data
+        let salt: Data
+        switch scheme {
+        case .scheme3:
+            let hashed = Data(SHA256.hash(data: secret))
+            material = hashed
+            salt = Data(SHA256.hash(data: hashed + challenge + seed))
+        case .scheme26:
+            material = secret
+            salt = Data(SHA256.hash(data: challenge + seed))
+        }
+        encryption = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: material),
+            salt: salt, info: Data("AirShield".utf8), outputByteCount: 32)
+        // Scheme 26 shares scheme 31's KDF and MAC prefix, but reuses the
+        // encryption key for its MAC rather than deriving a separate key.
         mac = encryption
     }
 
@@ -55,21 +73,37 @@ struct AirShieldCipher {
     let keys: AirShieldKeys
     private(set) var iv: Data
     private(set) var counter: UInt32
+    let scheme: AirShieldScheme
+
+    init(keys: AirShieldKeys, iv: Data, counter: UInt32, scheme: AirShieldScheme = .scheme3) {
+        self.keys = keys
+        self.iv = iv
+        self.counter = counter
+        self.scheme = scheme
+    }
 
     mutating func encrypt(_ frame: Data) throws -> Data {
-        let count = (16 - frame.count % 16) % 16
+        let count = scheme == .scheme26 ? 16 - frame.count % 16 : (16 - frame.count % 16) % 16
         let padded = frame + Data(repeating: UInt8(0xc0 + count), count: count)
         guard !padded.isEmpty, padded.count <= 4096 else { throw BandProtocolError("AirShield frame too large") }
         let ciphertext = try crypt(padded, key: keys.encryption, iv: iv, operation: CCOperation(kCCEncrypt))
         let body = Data([UInt8(ciphertext.count / 16 - 1)]) + ciphertext
-        let tag = HMAC<SHA256>.authenticationCode(for: counter.littleEndianData + body, using: keys.mac)
+        let tag = HMAC<SHA256>.authenticationCode(for: scheme.macPrefix + counter.littleEndianData + body, using: keys.mac)
         iv = Data(ciphertext.suffix(16))
         counter &+= 1
         return Data([0x40]) + Data(tag.prefix(8)) + body
     }
 
     mutating func decrypt(_ packet: Data) throws -> Data {
-        let expected = HMAC<SHA256>.authenticationCode(for: counter.littleEndianData + packet.dropFirst(9), using: keys.mac)
+        guard packet.count >= 26, packet.count <= 4106, packet.first == 0x40 else {
+            throw BandProtocolError("Invalid AirShield packet shape")
+        }
+        let blocks = Int(packet[packet.index(packet.startIndex, offsetBy: 9)]) + 1
+        guard packet.count == 10 + blocks * 16 else {
+            throw BandProtocolError("Invalid AirShield packet shape")
+        }
+        let expected = HMAC<SHA256>.authenticationCode(
+            for: scheme.macPrefix + counter.littleEndianData + packet.dropFirst(9), using: keys.mac)
         // Compare every byte before decrypting. No unauthenticated plaintext leaves this type.
         let difference = zip(expected.prefix(8), packet.dropFirst().prefix(8)).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) }
         guard difference == 0 else { throw BandProtocolError("Band packet authentication failed") }

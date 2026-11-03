@@ -635,11 +635,11 @@ private func streamReply(id: UInt64, raw: UInt64 = 0) -> Data {
     var peer = try Peer()
     _ = try peer.exchange(channel: 5, kind: 0x02000315, payload: streamReply(id: 3))
     let configRead = try #require(peer.requests(peer.session.setRawEMGEnabled(true, at: 100)).first)
-    #expect(configRead.channel == 0x8007)
+    #expect(configRead.channel == 0x8001)
     #expect(configRead.words == [0x8100ce56, 0x02000314])
     #expect(configRead.payload == BandWire.field(1, 7) + BandWire.field(5, Data()))
     #expect(try peer.session.queryStreamState().isEmpty)
-    let queried = try peer.exchange(channel: 7, kind: 0x02000315, payload: emgConfigReply())
+    let queried = try peer.exchange(channel: 1, kind: 0x02000315, payload: emgConfigReply())
     #expect(queried.events.contains { if case .rawEMGConfiguration(let config) = $0.payload { config.isSupported } else { false } })
     let query = try #require(queried.requests.first)
     #expect(query.channel == 0x8005 && query.words.isEmpty)
@@ -675,10 +675,10 @@ private func streamReply(id: UInt64, raw: UInt64 = 0) -> Data {
 
 @Test func savedEMGPreferenceStartsGesturesBeforeAddingReadings() throws {
     var peer = try Peer(rawEMG: true)
-    #expect(!peer.startup.contains { $0.channel == 0x8007 })
+    #expect(!peer.startup.contains { $0.channel == 0x8001 && $0.words == [0x8100ce56, 0x02000314] })
     let ack = try peer.exchange(channel: 5, kind: 0x02000315, payload: streamReply(id: 3))
     #expect(ack.events.contains { if case .connected = $0.payload { true } else { false } })
-    #expect(ack.requests.map(\.channel) == [0x8007])
+    #expect(ack.requests.map(\.channel) == [0x8001])
 }
 
 @Test func EMGTimeoutAndRejectionDoNotDiscardTheGestureSubscription() throws {
@@ -689,12 +689,12 @@ private func streamReply(id: UInt64, raw: UInt64 = 0) -> Data {
     #expect(peer.session.tick(at: 109).contains { if case .rawEMGFailure = $0.payload { true } else { false } })
     #expect(peer.session.streamsEnabled)
     _ = try peer.requests(peer.session.setRawEMGEnabled(true, at: 110))
-    let rejected = try peer.exchange(channel: 7, kind: 0x02000315,
+    let rejected = try peer.exchange(channel: 1, kind: 0x02000315,
         payload: BandWire.field(1, 8) + BandWire.field(2, 0), now: 10)
     #expect(rejected.events.contains { if case .rawEMGFailure = $0.payload { true } else { false } })
     #expect(peer.session.streamsEnabled)
     _ = try peer.requests(peer.session.setRawEMGEnabled(true, at: 111))
-    let serviceRejected = try peer.exchange(channel: 7, kind: 0x0300c001, now: 11)
+    let serviceRejected = try peer.exchange(channel: 1, kind: 0x0300c001, now: 11)
     #expect(serviceRejected.events.contains { if case .rawEMGFailure = $0.payload { true } else { false } })
     #expect(peer.session.streamsEnabled)
 }
@@ -913,7 +913,7 @@ private func motionConfirmations(_ events: [BandEvent]) -> [(MotionStreams, Bool
         _ = try peer.exchange(channel: request.channel & 0x7fff, kind: 0x02000315,
             payload: BandWire.field(1, id) + BandWire.field(2, 1) + body, now: Double(index) * 0.1 + 0.01)
     }
-    #expect(channels == [0x8005, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8007])
+    #expect(channels == [0x8005] + Array(repeating: 0x8001, count: 10))
     var scores = Data()
     for _ in 0..<100 { scores += Float(-log(100.0 as Double)).bitPattern.littleEndianData }
     for index in 0..<5 {

@@ -13,6 +13,7 @@ public final class BandSession {
     private var peerKey: Data?
     private var peerChallenge: Data?
     private var peerSeed: Data?
+    private var encryptionScheme = AirShieldScheme.scheme3
     private var pending = Data()
     private var transmitter: AirShieldCipher?
     private var receiver: AirShieldReceiver?
@@ -41,7 +42,8 @@ public final class BandSession {
     public var motionStreams: MotionStreams { motion }
     private let streamChannel: UInt16 = 0x8005
     private let configurationChannel: UInt16 = 0x8006
-    private let configServiceChannel: UInt16 = 0x8007
+    // Configuration reads and model settings share one generic RPC service.
+    private let configServiceChannel: UInt16 = 0x8001
     private let batteryChannel: UInt16 = 0x8008
     private var batteryChannelOpened = false
     private var batteryRequestID: UInt64 = 0
@@ -78,9 +80,10 @@ public final class BandSession {
     private var handRequest: HandRequest?
     public private(set) var hand: BandHand?
     private let log = Logger(subsystem: "local.callbacked.kinesis", category: "protocol")
+    private let modelLog = Logger(subsystem: "local.callbacked.kinesis", category: "model")
+    private(set) var deviceModelInfo: BandDeviceModelInfo?
     private var startupFrames = 0
     private let modelCapture = BandModelCapture()
-    private var modelControlOpened = false
     public var modelCaptureActive: Bool { modelCapture.status.active }
 
     public func setModelCaptureEnabled(_ enabled: Bool, at time: Double) throws {
@@ -101,8 +104,7 @@ public final class BandSession {
             let opened: Bool
             switch request.channel {
             case streamChannel: opened = true
-            case configServiceChannel: opened = configServiceOpened; configServiceOpened = true
-            default: opened = modelControlOpened; modelControlOpened = true
+            default: opened = configServiceOpened; configServiceOpened = true
             }
             outgoing = try encrypt(BandWire.frame(channel: request.channel,
                 words: opened ? [] : [0x8100ce56, 0x02000314],
@@ -158,16 +160,28 @@ public final class BandSession {
             let peer = try P256.KeyAgreement.PublicKey(x963Representation: Data([4]) + point)
             switch kind {
             case 0x02000001:
-                guard peerKey == nil, try fields.integer(3) == 0, try fields.integer(4) == 3 else {
+                let curve = try fields.integer(3)
+                let offered = try fields.requiredInteger(4)
+                guard peerKey == nil, curve == 0, offered == 3 || offered == 27 else {
                     throw BandProtocolError("Unsupported band encryption parameters")
                 }
+                encryptionScheme = offered == 27 ? .scheme26 : .scheme3
                 peerKey = point
                 peerChallenge = try fields.bytes(2, count: 16)
                 outgoing.append(try BandWire.frame(channel: 1, words: [0x02000002], payload:
                     BandWire.field(1, publicKey) + BandWire.field(2, seed) + BandWire.field(3, iv)
-                    + BandWire.field(4, UInt64(base)) + BandWire.field(5, 3)))
+                    + BandWire.field(4, UInt64(base)) + BandWire.field(5, encryptionScheme.rawValue)))
             case 0x02000002:
-                guard point == peerKey, let peerChallenge, try fields.integer(5) == 3 else {
+                let confirmedScheme = try fields.requiredInteger(5)
+                // Newer firmware offers 27 and accepts our Enable 26, but may
+                // announce either 26 or 27 for its own direction. Both replies
+                // were verified against authenticated hardware packets using
+                // this profile. Keep our outgoing selection at verified 26;
+                // every incoming packet must still pass its MAC before use.
+                let supportedReply = confirmedScheme == encryptionScheme.rawValue
+                    || (encryptionScheme == .scheme26 && confirmedScheme == 27)
+                guard point == peerKey, let peerChallenge,
+                      supportedReply else {
                     throw BandProtocolError("Unexpected band encryption response")
                 }
                 let secret = try privateKey.sharedSecretFromKeyAgreement(with: peer).withUnsafeBytes { Data($0) }
@@ -176,8 +190,11 @@ public final class BandSession {
                 let peerIV = try fields.bytes(3, count: 16)
                 let peerBase = try fields.integer(4)
                 guard let peerCounter = UInt32(exactly: peerBase) else { throw BandProtocolError("Invalid band packet counter") }
-                transmitter = AirShieldCipher(keys: try AirShieldKeys(secret: secret, challenge: peerChallenge, seed: seed), iv: iv, counter: base)
-                receiver = AirShieldReceiver(cipher: AirShieldCipher(keys: try AirShieldKeys(secret: secret, challenge: challenge, seed: peerSeed), iv: peerIV, counter: peerCounter))
+                transmitter = AirShieldCipher(keys: try AirShieldKeys(secret: secret, challenge: peerChallenge,
+                    seed: seed, scheme: encryptionScheme), iv: iv, counter: base, scheme: encryptionScheme)
+                receiver = AirShieldReceiver(cipher: AirShieldCipher(keys: try AirShieldKeys(secret: secret,
+                    challenge: challenge, seed: peerSeed, scheme: encryptionScheme), iv: peerIV,
+                    counter: peerCounter, scheme: encryptionScheme))
                 if let ceremony {
                     // Enrollment startup runs the ownership ceremony instead of
                     // the identity queries; it rejoins the enrolled flow at trust.
@@ -202,7 +219,7 @@ public final class BandSession {
             pending.removeAll(keepingCapacity: true)
             for plaintext in records {
                 authenticatedPackets += 1
-                for frame in try datax.feed(plaintext) {
+                for frame in try datax.feed(plaintext, scheme: encryptionScheme) {
                     events += try input(frame, at: time, outgoing: &outgoing)
                 }
                 if streaming, !stopping, time - lastHeartbeat >= 0.2 {
@@ -244,6 +261,9 @@ public final class BandSession {
     /// Update the existing input subscription. Gestures stay on, and motion stays as it is.
     public func setRawEMGEnabled(_ enabled: Bool, at time: Double) throws -> Data {
         guard !stopping else { throw BandProtocolError("Wait for the band to reconnect before changing readings.") }
+        guard !modelCapture.status.active else {
+            throw BandProtocolError("Finish the band model operation before changing muscle readings.")
+        }
         guard rawRequest == nil else { throw BandProtocolError("Wait for the current EMG change to finish.") }
         rawEMG = enabled
         guard streamsEnabled else { return Data() }
@@ -495,7 +515,7 @@ public final class BandSession {
                 }
             }
             bandTrusted = true
-            outgoing.append(try encrypt(BandWire.frame(channel: frame.channel & 0x7fff, words: [0x03001000])))
+            outgoing.append(try encrypt(BandWire.frame(channel: frame.wireChannel & 0x7fff, words: [0x03001000])))
         } else if kind == 0x02001000, frame.channel == 0x8001, endLinkSent {
             let fields = try ProtoFields(frame.payload)
             guard try fields.requiredInteger(1) == 1, try fields.bytes(2).count == 16 else {
@@ -548,6 +568,9 @@ public final class BandSession {
         if kind == 0x02000315, modelCapture.receive(channel: frame.channel, payload: frame.payload, at: time) {
             return modelCapture.drainEvents()
         }
+        if kind == 0x0300c001, modelCapture.reject(channel: frame.channel, at: time) {
+            return modelCapture.drainEvents()
+        }
         if kind == 0x0200020c, setupStage == .input, !stopping, modelCapture.status.active {
             // A malformed frame is skipped: failing the connection here would leave the band
             // in the recording's model until the next reconnect.
@@ -597,9 +620,12 @@ public final class BandSession {
             if frame.channel == 3, setupStage == .deviceInfo {
                 throw BandProtocolError("The band rejected gesture setup. Try reconnecting.")
             }
-            if let rawRequest, frame.channel == 7 || (frame.channel == 5 && rawRequest.stage != .config) {
-                self.rawRequest = nil
-                return [BandEvent(.rawEMGFailure("The band rejected the EMG request."), at: time)]
+            if let rawRequest {
+                let expected = rawRequest.stage == .config ? configServiceChannel : streamChannel
+                if frame.channel & 0x7fff == expected & 0x7fff {
+                    self.rawRequest = nil
+                    return [BandEvent(.rawEMGFailure("The band rejected the EMG request."), at: time)]
+                }
             }
             if frame.channel == 5, setupStage == .input {
                 throw BandProtocolError("The band rejected the input subscription. Try reconnecting.")
@@ -618,6 +644,11 @@ public final class BandSession {
             guard try fields.requiredInteger(1) == 1 else { return [] }
             guard try fields.requiredInteger(2) == 1 else {
                 throw BandProtocolError("The band rejected gesture setup. Try reconnecting.")
+            }
+            // Optional model metadata cannot block the normal gesture subscription.
+            deviceModelInfo = try? BandDeviceModelInfo(response: frame.payload)
+            if let deviceModelInfo {
+                modelLog.info("\(deviceModelInfo.diagnostic, privacy: .public)")
             }
             setupStage = .input
             outgoing.append(try streamRequest(id: 2, enabled: nil))

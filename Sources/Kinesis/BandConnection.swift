@@ -461,12 +461,22 @@ final class NativeBandConnection: NSObject, BandConnection,
             log.error("Input channel read failed: \(native.domain, privacy: .public) \(native.code, privacy: .public)")
             fail(Self.explainingPairing(error)); return
         }
-        guard characteristic.uuid == psmID, let bytes = characteristic.value, bytes == Data([255, 0]) else {
+        guard characteristic.uuid == psmID, let psm = Self.inputPSM(from: characteristic.value) else {
             fail(KinesisError(message: "Unsupported band input channel")); return
         }
-        log.info("Opening native L2CAP channel")
+        log.info("Opening native L2CAP channel \(psm, privacy: .public)")
         stage = "opening input channel"
-        peripheral.openL2CAPChannel(255)
+        peripheral.openL2CAPChannel(psm)
+    }
+
+    /// The band's GATT characteristic advertises a little-endian LE dynamic
+    /// PSM. Read it on every connection; firmware may allocate another value.
+    /// LE permits both odd and even values in this range (Core 6, Vol 3, A 4.22).
+    static func inputPSM(from bytes: Data?) -> CBL2CAPPSM? {
+        guard let bytes, bytes.count == 2 else { return nil }
+        let first = bytes.startIndex
+        let psm = UInt16(bytes[first]) | UInt16(bytes[bytes.index(after: first)]) << 8
+        return (0x0080...0x00ff).contains(psm) ? psm : nil
     }
 
     func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {

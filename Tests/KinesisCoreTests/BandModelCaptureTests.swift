@@ -19,7 +19,7 @@ private func reply(_ request: BandModelCapture.Request, readback: UInt64? = nil,
     case .streams(let enabled):
         payload = BandWire.field(5, [3, 4, 6, 22, 23].reduce(into: Data()) { $0 += BandWire.field($1, ($1 == 3 || $1 == 6 || enabled) ? 1 : 0) })
     case .claim: payload = BandWire.field(14, BandWire.field(1, BandWire.field(1, 38)))
-    case .info(let id):
+    case .info(let id), .inspect(let id):
         let name = id == 27 ? "data-collection" : "data-collection-model"
         payload = BandWire.field(14, BandWire.field(2, BandWire.field(4, UInt64(id)) + BandWire.field(3, Data(name.utf8))))
     case .write(let id, _):
@@ -179,7 +179,7 @@ private func restored(_ capture: BandModelCapture, from start: Double, dropping 
         capture.receive(channel: request.channel, payload: reply(request), at: now + 0.01)
         now += 0.02
     }
-    #expect(seen == [.claim, .info(27), .info(28), .write(28, 2), .write(27, 0),
+    #expect(seen == [.claim, .info(27), .info(28), .snapshot(27), .snapshot(28), .write(28, 2), .write(27, 0),
                      .read(28, 2), .read(27, 0), .config, .streams(false)])
     #expect(capture.status.restorationVerified && !capture.status.active)
     #expect(!capture.streamWanted)
@@ -194,6 +194,111 @@ private func restored(_ capture: BandModelCapture, from start: Double, dropping 
     if rejected {
         capture.receive(channel: info.channel, payload: BandWire.field(1, info.id) + BandWire.field(2, 2), at: 0.03)
     }
-    #expect(capture.next(at: 6) == nil)
+    var time = 6.0
+    while let request = capture.next(at: time) {
+        if case .write = request.operation { Issue.record("recovery wrote before validating the schema") }
+        // A rejected legacy descriptor may start discovery; unanswered lookups stay bounded.
+        time += 2
+    }
     #expect(capture.status.phase == .finished && !capture.status.restorationVerified)
+}
+
+@Test(arguments: [false, true])
+func aModelTimeoutNamesThePendingStreamOrClaimStage(claim: Bool) throws {
+    let capture = BandModelCapture()
+    try capture.start(at: 0)
+    var request = try #require(capture.next(at: 0))
+    if claim {
+        capture.receive(channel: 5, payload: reply(request), at: 0.01)
+        request = try #require(capture.next(at: 0.02))
+    }
+    let expected = claim ? "claiming model controls" : "starting model streams"
+    let cleanup = try #require(capture.next(at: request.deadline + 0.01))
+    #expect(capture.status.problem == expected + ": the band did not answer a model request")
+    #expect(capture.status.phase == .restoring && cleanup.operation == .streams(false))
+    capture.receive(channel: 5, payload: reply(cleanup), at: request.deadline + 0.02)
+    #expect(capture.next(at: request.deadline + 0.03) == nil)
+    #expect(capture.status.phase == .finished && capture.status.restorationVerified)
+}
+
+@Test(arguments: [false, true])
+func aModelServiceRejectionMatchesOnlyThePendingCanonicalChannel(claim: Bool) throws {
+    let capture = BandModelCapture()
+    #expect(!capture.reject(channel: 1, at: 0))
+    try capture.start(at: 0)
+    var request = try #require(capture.next(at: 0))
+    if claim {
+        capture.receive(channel: 5, payload: reply(request), at: 0.01)
+        request = try #require(capture.next(at: 0.02))
+    }
+    let unrelated: UInt16 = claim ? 5 : 1
+    #expect(!capture.reject(channel: unrelated, at: 0.03))
+    #expect(capture.pending?.id == request.id && capture.status.problem == nil)
+    #expect(capture.reject(channel: request.channel & 0x7fff, at: 0.04))
+    let expected = claim ? "claiming model controls" : "starting model streams"
+    #expect(capture.status.problem == expected + ": the band rejected a model request")
+    #expect(capture.status.phase == .restoring)
+    let cleanup = try #require(capture.next(at: 0.05))
+    #expect(cleanup.operation == .streams(false))
+    capture.receive(channel: 5, payload: reply(cleanup), at: 0.06)
+    _ = capture.next(at: 0.07)
+    #expect(capture.status.phase == .finished && capture.status.restorationVerified)
+}
+
+@Test func aRejectedModelWriteStillRestoresTheSnapshotAndStopsModelStreams() throws {
+    let capture = BandModelCapture()
+    try capture.start(at: 0)
+    var now = 0.0
+    while let request = capture.next(at: now) {
+        if request.operation == .write(28, 5) { break }
+        capture.receive(channel: request.channel, payload: reply(request), at: now + 0.01)
+        now += 0.02
+    }
+    #expect(capture.pending?.operation == .write(28, 5))
+    #expect(capture.reject(channel: 1, at: now + 0.01))
+    #expect(capture.status.problem == "writing model setting: the band rejected a model request")
+    var restored: [BandModelCapture.Operation] = []
+    now += 0.02
+    while let request = capture.next(at: now) {
+        restored.append(request.operation)
+        capture.receive(channel: request.channel, payload: reply(request), at: now + 0.01)
+        now += 0.02
+    }
+    #expect(restored == [.write(28, 2), .write(27, 0), .read(28, 2), .read(27, 0), .config, .streams(false)])
+    #expect(capture.status.phase == .finished && capture.status.restorationVerified && !capture.streamWanted)
+}
+
+@Test func rejectedModelRestorationRetriesOnceAndDoesNotClaimAnUnverifiedRestore() throws {
+    let capture = BandModelCapture()
+    try prepare(capture)
+    capture.restore(at: 1)
+    for now in [1.0, 1.02] {
+        let request = try #require(capture.next(at: now))
+        #expect(request.operation == .write(28, 2))
+        #expect(capture.reject(channel: 1, at: now + 0.01))
+    }
+    var now = 1.04
+    var stopped = false
+    while let request = capture.next(at: now) {
+        if request.operation == .streams(false) { stopped = true }
+        capture.receive(channel: request.channel, payload: reply(request), at: now + 0.01)
+        now += 0.02
+    }
+    #expect(stopped && capture.status.phase == .finished && !capture.status.restorationVerified)
+    #expect(capture.status.problem == "writing model setting: the band rejected a model request")
+}
+
+@Test func aRejectedOptionalDescriptionIsSkippedWithoutChangingTheInspectionFlow() throws {
+    let capture = BandModelCapture()
+    try capture.start(at: 0)
+    let streams = try #require(capture.next(at: 0))
+    capture.receive(channel: 5, payload: reply(streams), at: 0.01)
+    let claim = try #require(capture.next(at: 0.02))
+    capture.receive(channel: 1, payload: BandWire.field(1, claim.id) + BandWire.field(2, 1)
+        + BandWire.field(14, BandWire.field(1, BandWire.field(1, 3))), at: 0.03)
+    let first = try #require(capture.next(at: 0.04))
+    #expect(first.operation == .inspect(1))
+    #expect(capture.reject(channel: 1, at: 0.05))
+    #expect(capture.next(at: 0.06)?.operation == .inspect(2))
+    #expect(capture.status.phase == .preparing && capture.status.problem == nil)
 }

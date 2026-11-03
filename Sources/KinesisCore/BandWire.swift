@@ -61,6 +61,39 @@ struct ProtoFields {
         return bytes
     }
     func contains(_ field: Int) -> Bool { values[field] != nil }
+
+    func repeatedBytes(_ field: Int, maximumCount: Int, maximumBytes: Int) throws -> [Data] {
+        let entries = values[field] ?? []
+        guard maximumCount >= 0, maximumBytes >= 0, entries.count <= maximumCount else {
+            throw BandProtocolError("Invalid repeated protobuf byte field")
+        }
+        return try entries.map { entry in
+            guard case .bytes(let data) = entry, data.count <= maximumBytes else {
+                throw BandProtocolError("Invalid repeated protobuf byte field")
+            }
+            return data
+        }
+    }
+
+    /// Structural diagnostics only: field numbers, wire categories and multiplicities.
+    /// Never includes scalar values, byte lengths, strings or byte contents.
+    var wireShape: String {
+        let fields = values.keys.sorted().prefix(12).map { field in
+            var integers = 0, bytes = 0, fixed = 0
+            for value in values[field] ?? [] {
+                switch value {
+                case .integer: integers += 1
+                case .bytes: bytes += 1
+                case .fixed: fixed += 1
+                }
+            }
+            let kinds = [("int", integers), ("bytes", bytes), ("fixed", fixed)]
+                .filter { $0.1 > 0 }.map { "\($0.0)(\($0.1))" }.joined(separator: "+")
+            return "\(field):\(kinds)"
+        }
+        let text = fields.joined(separator: ";") + (values.count > 12 ? ";..." : "")
+        return String((text.isEmpty ? "empty" : text).prefix(96))
+    }
 }
 
 enum BandWire {
@@ -87,11 +120,14 @@ enum BandWire {
 
 public struct DataXFrame {
     public let channel: UInt16
+    /// Original channel tags are retained for acknowledgements to peer-opened services.
+    public let wireChannel: UInt16
     public let words: [UInt32]
     public let payload: Data
 
-    public init(channel: UInt16, words: [UInt32], payload: Data) {
+    public init(channel: UInt16, words: [UInt32], payload: Data, wireChannel: UInt16? = nil) {
         self.channel = channel
+        self.wireChannel = wireChannel ?? channel
         self.words = words
         self.payload = payload
     }
@@ -100,14 +136,17 @@ public struct DataXFrame {
 struct DataXReceiver {
     private var pending = Data()
 
-    mutating func feed(_ plaintext: Data) throws -> [DataXFrame] {
+    mutating func feed(_ plaintext: Data, scheme: AirShieldScheme = .scheme3) throws -> [DataXFrame] {
         guard !plaintext.isEmpty, plaintext.count % 16 == 0 else {
             throw BandProtocolError("Unaligned DataX plaintext")
         }
         var bytes = plaintext
         let padding = Int(bytes.last!) - 0xc0
-        // Only the repeated suffix observed on the tested firmware is stripped.
-        if (1...15).contains(padding), bytes.suffix(padding).allSatisfy({ Int($0) == 0xc0 + padding }) {
+        let maximumPadding = scheme == .scheme26 ? 16 : 15
+        let padded = (1...maximumPadding).contains(padding)
+            && bytes.suffix(padding).allSatisfy({ Int($0) == 0xc0 + padding })
+        guard scheme != .scheme26 || padded else { throw BandProtocolError("Invalid DataX padding") }
+        if padded {
             bytes.removeLast(padding)
         }
         pending.append(bytes)
@@ -116,7 +155,10 @@ struct DataXReceiver {
             let length = pending.be16(0)
             let size = Int(length & 0x7fff) + 4
             guard pending.count >= size else { break }
-            let channel = pending.be16(2)
+            let wireChannel = pending.be16(2)
+            // New firmware adds connection-specific tags above the channel ID.
+            // Preserve the peer-open bit while routing to the original service.
+            let channel = scheme == .scheme26 ? wireChannel & 0x80ff : wireChannel
             var offset = 4
             var words: [UInt32] = []
             if length & 0x8000 != 0 {
@@ -126,7 +168,8 @@ struct DataXReceiver {
                     offset += 4
                 } while words.last! & 0x80000000 != 0
             }
-            frames.append(DataXFrame(channel: channel, words: words, payload: Data(pending[offset..<size])))
+            frames.append(DataXFrame(channel: channel, words: words, payload: Data(pending[offset..<size]),
+                                     wireChannel: wireChannel))
             pending = Data(pending.dropFirst(size))
         }
         return frames
