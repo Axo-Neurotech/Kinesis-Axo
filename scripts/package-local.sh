@@ -67,9 +67,9 @@ mkdir -p "$source_dir/design" "$output_dir"
 
 # Copy only release inputs, including uncommitted source changes. In particular,
 # never copy the repository root, user settings, recordings, or previous builds.
-for directory in Sources Tests Packaging scripts docs; do
+for directory in Sources Tests Packaging scripts docs Tools firmware; do
     [ -d "$directory" ] && [ ! -L "$directory" ] || fail "missing source directory: $directory"
-    /usr/bin/rsync -a --exclude='.DS_Store' --exclude='.git/' --exclude='.build/' \
+    /usr/bin/rsync -a --exclude='.DS_Store' --exclude='.git/' --exclude='.build/' --exclude='build/' \
         --exclude='.native/' --exclude='dist/' --exclude='local/' --exclude='.runtime/' \
         --exclude='recordings/' --exclude='AGENT_HANDOFF*' "$directory" "$source_dir/"
 done

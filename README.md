@@ -58,6 +58,10 @@ open dist/Kinesis.app
 
 quit a copy running from `dist/` before rebuilding it. add `--dev` to either build command to include developer tools.
 
+## experimental iPhone controller
+
+The [iPhone controller work](docs/iphone-controller.md) starts with a physical ESP32 Bluetooth keyboard/mouse adapter for scrolling and configurable shortcut triggers. Build its firmware with `./scripts/build-phone-bridge.sh`; this compiles without writing to a board. The [adapter setup](firmware/axo-phone-bridge/README.md) describes pairing and deliberate single-action phone tests. Shared Swift command handling and a Mac developer diagnostic are included; the native iPhone companion and live band-to-phone operation still require device validation and full Xcode.
+
 ## package a local build
 
 ```sh
