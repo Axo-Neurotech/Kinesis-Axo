@@ -29,6 +29,10 @@ some things may act quirky or not work at all, if that is the case i would love 
 ## run it
 needs macos 14+ and a neural band. the packaged local build is for Apple Silicon; source can also be built for Intel. preserve an existing working pairing when updating the app. resetting or forgetting a band changes its pairing and is not an update step.
 
+**hackathon download:** [Kinesis 0.5.0 build 6.22 for Apple Silicon](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/download/v0.5.0-axo.6.22/Kinesis-0.5.0-build6.22-arm64-local.zip). unzip it, move Kinesis.app into Applications, and open it; developer tools are not required. read the [setup guide](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/download/v0.5.0-axo.6.22/START-HERE.md) for permissions, Meta sign-in, band pairing, EMG, and handwriting. [release details and checksums](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/tag/v0.5.0-axo.6.22).
+
+this experimental build is ad-hoc signed and not Apple-notarized; macOS may require manual approval on first launch. this repository is private, so its release downloads require repository access.
+
 local app and source archives are produced with the commands below. the [original upstream releases](https://github.com/callbacked/kinesis/releases/latest) are maintained by callbacked.
 
 set your band in pairing mode, hit pair band, and sign in with meta once. allow bluetooth + accessibility when prompted, and accept the bluetooth pairing request from macos. enable controls and you're in.
