@@ -2,7 +2,7 @@
 
 This download is the Apple Silicon Mac app, requiring macOS 14 or later. Intel Macs, Windows, and iPhone cannot run this binary. You do not need Xcode, special drivers, or an ESP board to connect a band and use the Mac app. Python 3 is optional for the supplied stream example.
 
-The repository and release are private. Participants need access to Axo-Neurotech/Kinesis-Axo and must sign in to GitHub to download the assets. The app is experimental and ad-hoc signed, rather than Developer ID signed or Apple-notarized. macOS may require manual approval on first launch; follow [Apple's instructions for opening downloaded apps](https://support.apple.com/102445). Bluetooth and Accessibility approval are separate from opening the app.
+The repository and its published releases are public. Participants can download the assets without a GitHub account or invitation. The app is experimental and ad-hoc signed, rather than Developer ID signed or Apple-notarized. macOS may require manual approval on first launch; follow [Apple's instructions for opening downloaded apps](https://support.apple.com/102445). Bluetooth and Accessibility approval are separate from opening the app.
 
 ## Install and pair
 

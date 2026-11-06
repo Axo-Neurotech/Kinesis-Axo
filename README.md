@@ -31,7 +31,7 @@ needs macos 14+ and a neural band. the packaged local build is for Apple Silicon
 
 **hackathon download:** [Kinesis 0.5.0 build 6.28 for Apple Silicon](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/download/v0.5.0-axo.6.28/Kinesis-0.5.0-build6.28-arm64-local.zip), including the live sensor stream. unzip it, move Kinesis.app into Applications, and open it; developer tools are not required. read the [participant setup guide](docs/hackathon-setup.md) for permissions, Meta sign-in, band pairing, and connecting your code to EMG, gyro, and gestures. [release assets and checksums](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/tag/v0.5.0-axo.6.28).
 
-this experimental build is ad-hoc signed and not Apple-notarized; macOS may require manual approval on first launch. this repository is private, so its release downloads require repository access.
+this experimental build is ad-hoc signed and not Apple-notarized; macOS may require manual approval on first launch. this repository and its published releases are public; participants can download the app without a GitHub account or invitation.
 
 local app and source archives are produced with the commands below. the [original upstream releases](https://github.com/callbacked/kinesis/releases/latest) are maintained by callbacked.
 
