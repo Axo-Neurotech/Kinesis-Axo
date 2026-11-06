@@ -29,13 +29,13 @@ some things may act quirky or not work at all, if that is the case i would love 
 ## run it
 needs macos 14+ and a neural band. the packaged local build is for Apple Silicon; source can also be built for Intel. preserve an existing working pairing when updating the app. resetting or forgetting a band changes its pairing and is not an update step.
 
-**hackathon download:** [Kinesis 0.5.0 build 6.22 for Apple Silicon](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/download/v0.5.0-axo.6.22/Kinesis-0.5.0-build6.22-arm64-local.zip). unzip it, move Kinesis.app into Applications, and open it; developer tools are not required. read the [setup guide](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/download/v0.5.0-axo.6.22/START-HERE.md) for permissions, Meta sign-in, band pairing, EMG, and handwriting. [release details and checksums](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/tag/v0.5.0-axo.6.22).
+**hackathon download:** [Kinesis 0.5.0 build 6.28 for Apple Silicon](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/download/v0.5.0-axo.6.28/Kinesis-0.5.0-build6.28-arm64-local.zip), including the live sensor stream. unzip it, move Kinesis.app into Applications, and open it; developer tools are not required. read the [participant setup guide](docs/hackathon-setup.md) for permissions, Meta sign-in, band pairing, and connecting your code to EMG, gyro, and gestures. [release assets and checksums](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/tag/v0.5.0-axo.6.28).
 
 this experimental build is ad-hoc signed and not Apple-notarized; macOS may require manual approval on first launch. this repository is private, so its release downloads require repository access.
 
 local app and source archives are produced with the commands below. the [original upstream releases](https://github.com/callbacked/kinesis/releases/latest) are maintained by callbacked.
 
-set your band in pairing mode, hit pair band, and sign in with meta once. allow bluetooth + accessibility when prompted, and accept the bluetooth pairing request from macos. enable controls and you're in.
+set your assigned band in pairing mode, hit pair band, and sign in with meta once. allow Bluetooth and accept the pairing request from macOS. Accessibility approval is needed for Mac keyboard/mouse controls; it is not needed to read the live sensor API. enable controls when you want gestures to control the Mac.
 
 ## why the meta sign-in
 
@@ -62,9 +62,15 @@ open dist/Kinesis.app
 
 quit a copy running from `dist/` before rebuilding it. add `--dev` to either build command to include developer tools.
 
+## live sensor stream
+
+Build 6.28 includes a **stream** tab with an opt-in, read-only sensor API for Python and local browser projects. It sends raw eight-channel EMG, gyro, orientation, and decoded gesture messages directly from the existing band connection as timestamped JSON over Server-Sent Events. Open **stream**, enable **local sensor feed**, then select **copy stream URL**. Your project does not pair with the band separately. The feed starts off each time Kinesis opens, and a new link is generated when it starts.
+
+The release includes [sensor-stream-examples.zip](https://github.com/Axo-Neurotech/Kinesis-Axo/releases/download/v0.5.0-axo.6.28/sensor-stream-examples.zip), containing a Python reader that uses only the standard library and the API guide. See the [participant setup](docs/hackathon-setup.md#read-the-live-sensor-stream) for a quick check or the [live sensor API guide](docs/sensor-stream.md) for the schema and browser example.
+
 ## experimental iPhone controller
 
-The [iPhone controller work](docs/iphone-controller.md) starts with a physical ESP32 Bluetooth keyboard/mouse adapter for scrolling and configurable shortcut triggers. Build its firmware with `./scripts/build-phone-bridge.sh`; this compiles without writing to a board. The [adapter setup](firmware/axo-phone-bridge/README.md) describes pairing and deliberate single-action phone tests. Shared Swift command handling and a Mac developer diagnostic are included; the native iPhone companion and live band-to-phone operation still require device validation and full Xcode.
+The [Mac-assisted iPhone controller](docs/iphone-controller.md) forwards band gestures through USB to a physical ESP32 Bluetooth keyboard/mouse adapter paired to the iPhone. Scrolling and ChatGPT dictation start/stop/send have been checked on a handset; the Mac must remain awake and connected. Build the adapter firmware with `./scripts/build-phone-bridge.sh`; this compiles without writing to a board. The [adapter setup](firmware/axo-phone-bridge/README.md) describes the supported hardware and pairing. This is separate from the local sensor API; a standalone iPhone companion is not implemented.
 
 ## package a local build
 

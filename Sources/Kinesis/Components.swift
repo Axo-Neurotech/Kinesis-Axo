@@ -269,12 +269,13 @@ struct PillSlider: View {
 struct TextTabs<Value: Hashable>: View {
     let options: [Choice<Value>]
     @Binding var selection: Value
+    var spacing: CGFloat = 26
     @Namespace private var tabs
     @State private var hovered: Value?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 26) {
+        HStack(spacing: spacing) {
             ForEach(options) { option in
                 let chosen = option.value == selection
                 Button {

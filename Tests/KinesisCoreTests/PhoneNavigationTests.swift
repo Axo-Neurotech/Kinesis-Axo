@@ -55,6 +55,29 @@ struct PhoneNavigationTests {
         #expect(PhoneScroll(vertical: 0) == nil)
     }
 
+    @Test func pointerMovementHasBoundedSignedAxesAndNoClickOrScroll() throws {
+        let movement = try #require(PhonePointerMove(dx: -127, dy: 127))
+        let reports = PhoneNavigationAction.move(movement).reports
+        #expect(reports.map(\.kind) == [.mouse])
+        #expect(reports.map(\.bytes) == [Data([0, 0x81, 0x7f, 0, 0])])
+        let down = try #require(PhonePointerMove(dx: 0, dy: 1))
+        #expect(PhoneNavigationAction.move(down).reports[0].bytes == Data([0, 0, 1, 0, 0]))
+        #expect(PhonePointerMove(dx: 0, dy: 0) == nil)
+    }
+
+    @Test func leftClickAlwaysReleasesWithoutMovementOrWheelReports() {
+        let reports = PhoneNavigationAction.click.reports
+        #expect(reports.map(\.kind) == [.mouse, .mouse])
+        #expect(reports.map(\.bytes) == [Data([1, 0, 0, 0, 0]), Data(repeating: 0, count: 5)])
+        #expect(reports.allSatisfy { $0.bytes.dropFirst().allSatisfy { $0 == 0 } })
+    }
+
+    @Test(arguments: [Int.min, -128, 128, Int.max])
+    func rejectsOutOfRangePointerMovementWithoutClampingOrOverflow(value: Int) {
+        #expect(PhonePointerMove(dx: value, dy: 1) == nil)
+        #expect(PhonePointerMove(dx: 1, dy: value) == nil)
+    }
+
     @Test func outputRequiresExplicitArmingAndExplicitMapping() {
         var session = PhoneNavigationSession()
         #expect(!session.isArmed)

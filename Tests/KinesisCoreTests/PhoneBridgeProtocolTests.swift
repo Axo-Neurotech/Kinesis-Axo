@@ -83,6 +83,29 @@ struct PhoneBridgeProtocolTests {
         #expect(try sequencer.next(.disarm).sequence == 1)
     }
 
+    @Test func pointerMovementAddsOpcodeSixWithoutChangingBinaryVersion() throws {
+        var sequencer = PhoneBridgeSequencer()
+        sequencer.update(status: try status())
+        _ = try sequencer.next(.arm)
+        sequencer.update(status: try status(armed: true, sequence: 1))
+        let movement = try #require(PhonePointerMove(dx: -127, dy: 127))
+        #expect(try sequencer.next(.action(.move(movement))).data
+            == Data([1, 6, 2, 0, 0x78, 0x56, 0x34, 0x12, 0x81, 0x7f, 0, 0]))
+        #expect(PhoneBridgeWire.version == 1)
+    }
+
+    @Test func leftClickAddsOnlyOpcodeSevenAndZeroArguments() throws {
+        var sequencer = PhoneBridgeSequencer()
+        sequencer.update(status: try status())
+        #expect(throws: PhoneBridgeCommandError.notArmed) { try sequencer.next(.action(.click)) }
+        _ = try sequencer.next(.arm)
+        sequencer.update(status: try status(armed: true, sequence: 1))
+        #expect(try sequencer.next(.action(.click)).data
+            == Data([1, 7, 2, 0, 0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0]))
+        _ = try sequencer.next(.disarm)
+        #expect(throws: PhoneBridgeCommandError.notArmed) { try sequencer.next(.action(.click)) }
+    }
+
     @Test func requiresExplicitLocalArmAndAnAcknowledgementBeforeActions() throws {
         var sequencer = PhoneBridgeSequencer()
         sequencer.update(status: try status(armed: true, sequence: 7))

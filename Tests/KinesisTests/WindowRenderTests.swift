@@ -133,6 +133,7 @@ private struct AllowedControls: MacControls {
 
     let smallest = CGSize(width: 920, height: 660)
     var edges: [(String, AnyView)] = [
+        ("edge-stream", AnyView(MainView(model: try readings(active: false), page: .stream, scrolls: false))),
         ("cursor-ready", AnyView(MainView(model: try readings(active: false), page: .cursor, scrolls: false))),
         ("readings-empty", AnyView(MainView(model: try readings(active: false), page: .readings, scrolls: false))),
         ("readings-synthetic-live", AnyView(MainView(model: try readings(active: true), page: .readings, scrolls: false))),

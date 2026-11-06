@@ -70,6 +70,7 @@ mkdir -p "$source_dir/design" "$output_dir"
 for directory in Sources Tests Packaging scripts docs Tools firmware; do
     [ -d "$directory" ] && [ ! -L "$directory" ] || fail "missing source directory: $directory"
     /usr/bin/rsync -a --exclude='.DS_Store' --exclude='.git/' --exclude='.build/' --exclude='build/' \
+        --exclude='__pycache__/' --exclude='*.pyc' --exclude='*.pyo' \
         --exclude='.native/' --exclude='dist/' --exclude='local/' --exclude='.runtime/' \
         --exclude='recordings/' --exclude='AGENT_HANDOFF*' "$directory" "$source_dir/"
 done

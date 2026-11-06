@@ -67,6 +67,9 @@ public struct PhoneBridgeCommand: Equatable, Sendable {
             (opcode, arg0, arg1) = (4, chord.key.rawValue, chord.modifiers.rawValue)
         case .action(.scroll(let scroll)):
             (opcode, arg0, arg1) = (5, UInt8(bitPattern: scroll.vertical), UInt8(bitPattern: scroll.horizontal))
+        case .action(.move(let movement)):
+            (opcode, arg0, arg1) = (6, UInt8(bitPattern: movement.dx), UInt8(bitPattern: movement.dy))
+        case .action(.click): (opcode, arg0, arg1) = (7, 0, 0)
         }
         return Data([
             PhoneBridgeWire.version, opcode,

@@ -77,8 +77,8 @@ struct KinesisApp: App {
 private struct MenuBarLabel: View {
     @ObservedObject var model: BandModel
     var body: some View {
-        Image(nsImage: model.live && model.controlsEnabled ? Self.live : Self.idle)
-            .accessibilityLabel(model.live && model.controlsEnabled ? "Kinesis, controls live" : "Kinesis")
+        Image(nsImage: model.live && model.hasActiveControls ? Self.live : Self.idle)
+            .accessibilityLabel(model.live && model.hasActiveControls ? "Kinesis, controls live" : "Kinesis")
     }
 
     // Drawn once each. The model publishes on every gesture, and the mark never changes.

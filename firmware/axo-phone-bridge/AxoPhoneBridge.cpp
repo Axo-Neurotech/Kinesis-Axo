@@ -8,6 +8,7 @@
 #include <esp_random.h>
 #include <esp_gatts_api.h>
 #include "AxoPhoneProtocol.h"
+#include "AxoPhoneSerial.h"
 #include "AxoPhoneReportMap.h"
 
 #if !defined(CONFIG_BLUEDROID_ENABLED)
@@ -22,6 +23,9 @@ constexpr uint32_t localArmLimitMs = 30000;
 constexpr uint32_t transmitLimitMs = 350;
 constexpr size_t queueCapacity = 8;
 constexpr uint16_t noConnection = 0xffff;
+// A physical-console diagnostic only. Public USB/BLE decoding still accepts
+// opcodes 1...7, so the host cannot request this internal diagnostic opcode.
+constexpr Opcode localNudge = static_cast<Opcode>(0xf0);
 
 BLEServer *server = nullptr;
 esp_gatt_if_t registeredInterface = ESP_GATT_IF_NONE;
@@ -55,7 +59,7 @@ struct PendingCommand {
   uint32_t generation;
   bool local;
 };
-enum class Phase { none, keyPress, keyRelease, wheelEvent, mouseRelease };
+enum class Phase { none, keyPress, keyRelease, wheelEvent, mousePress, mouseRelease };
 struct Transmission {
   Phase phase = Phase::none;
   uint16_t connection = noConnection;
@@ -80,6 +84,7 @@ bool localTransaction = false;
 bool keyboardReleasePending = true;
 bool mouseReleasePending = true;
 bool statusDirty = true;
+bool serialStatusRequested = true;
 bool previousOutputReady = false;
 bool outputFaulted = false;
 Reason currentReason = startup;
@@ -509,50 +514,83 @@ void accept(const PendingCommand &pending, uint32_t now) {
     const uint8_t report[5] = {0, 0, 0, command.first, command.second};
     if (!sendReport(mouseInput, report, sizeof(report), Phase::wheelEvent)) stopOutput(hidSendFailed);
     // Never retry a relative movement after an ambiguous failure.
+  } else if (pending.local && command.opcode == localNudge) {
+    const uint8_t report[5] = {0, 16, 16, 0, 0};
+    if (!sendReport(mouseInput, report, sizeof(report), Phase::wheelEvent)) stopOutput(hidSendFailed);
+  } else if (command.opcode == pointerMove) {
+    uint8_t report[5];
+    pointerMoveReport(report, command);
+    if (!sendReport(mouseInput, report, sizeof(report), Phase::wheelEvent)) stopOutput(hidSendFailed);
+    // Positioning is explicit and momentary; arming/scrolling never moves X/Y.
+  } else if (command.opcode == pointerClick) {
+    uint8_t report[5];
+    pointerClickReport(report);
+    // Retain the release obligation before any submission, including an
+    // ambiguous failure. releaseOutput() blocks all following commands until
+    // the neutral report's completion; failed/uncertain presses are not retried.
+    mouseReleasePending = true;
+    if (!sendReport(mouseInput, report, sizeof(report), Phase::mousePress)) stopOutput(hidSendFailed);
   }
 }
 
 void serialSetup() {
-  static char line[12];
-  static size_t used = 0;
-  static bool discardLine = false;
-  while (Serial.available()) {
-    const int byte = Serial.read();
-    if (byte == '\r') continue;
-    if (byte == '\n') {
-      line[used] = 0;
-      if (!discardLine && strcmp(line, "PAIR") == 0) {
+  static SerialLine parser;
+  // Service HID completions, neutral reports, and the watchdog even if a host
+  // floods this physical console. Complete lines retain no queue of their own.
+  for (size_t count = 0; count < 64 && Serial.available(); ++count) {
+    const SerialLine::Result result = parser.push(Serial.read());
+    if (result == SerialLine::Result::rejected) { boundary(invalidCommand); continue; }
+    if (result == SerialLine::Result::ready) {
+      const char *line = parser.data();
+      if (strcmp(line, "HELLO") == 0) {
+        serialStatusRequested = true;
+      } else if (strncmp(line, "USB", 3) == 0) {
+        Command command;
+        if (!serialCommand(line, parser.size(), command)) { boundary(invalidCommand); continue; }
+        const LinkState current = snapshot();
+        const PendingCommand pending = {command, millis(), current.generation, false};
+        if (xQueueSend(commands, &pending, 0) != pdTRUE) boundary(queueOverflow);
+      } else if (strcmp(line, "PAIR") == 0) {
         beginPairingReset();
-      } else if (!discardLine && strcmp(line, "DISARM") == 0) {
+      } else if (strcmp(line, "DISARM") == 0) {
         stopOutput(explicitDisarm);
-      } else if (!discardLine && strcmp(line, "ARM") == 0) {
+      } else if (strcmp(line, "ARM") == 0) {
         stopOutput(explicitDisarm);
         localArmUntil = millis() + localArmLimitMs;
-        Serial.println("One local navigation test authorized for 30 seconds; TAB, UP, DOWN, or F13.");
-      } else if (!discardLine && (strcmp(line, "TAB") == 0 || strcmp(line, "F13") == 0
-          || strcmp(line, "UP") == 0 || strcmp(line, "DOWN") == 0)) {
+        Serial.println("One local navigation test authorized for 30 seconds; TAB, UP, DOWN, F13, or NUDGE.");
+      } else if (strcmp(line, "TAB") == 0 || strcmp(line, "F13") == 0
+          || strcmp(line, "UP") == 0 || strcmp(line, "DOWN") == 0 || strcmp(line, "NUDGE") == 0) {
         const bool keyboard = strcmp(line, "TAB") == 0 || strcmp(line, "F13") == 0;
+        const bool nudge = strcmp(line, "NUDGE") == 0;
         const uint8_t argument = keyboard ? (strcmp(line, "TAB") == 0 ? 0x2b : 0x68)
-          : (strcmp(line, "UP") == 0 ? 1 : 0xff);
-        const Command command = {keyboard ? key : wheel, 0, 0, argument, 0};
+          : (nudge ? 0 : (strcmp(line, "UP") == 0 ? 1 : 0xff));
+        const Command command = {nudge ? localNudge : (keyboard ? key : wheel), 0, 0, argument, 0};
         const PendingCommand pending = {command, millis(), snapshot().generation, true};
         if (!localArmUntil || int32_t(localArmUntil - millis()) <= 0) Serial.println("Type ARM before a local test.");
         else if (!outputReady()) Serial.println("HID output is not ready; pair the phone and enable keyboard/mouse access.");
         else if (xQueueSend(commands, &pending, 0) != pdTRUE) boundary(queueOverflow);
       }
-      used = 0;
-      discardLine = false;
-    } else if (!discardLine && byte >= 0x20 && byte <= 0x7e && used < sizeof(line) - 1) line[used++] = static_cast<char>(byte);
-    else { used = 0; discardLine = true; }
+    }
   }
 }
 void publishStatus() {
-  if (!statusDirty || !statusCharacteristic) return;
+  if (!statusDirty && !serialStatusRequested) return;
   uint8_t bytes[packetSize];
   status(bytes, controlsArmed, lastAcceptedSequence, sessionToken, currentReason, outputReady());
-  statusCharacteristic->setValue(bytes, sizeof(bytes));
-  if (snapshot().authenticated) statusCharacteristic->notify();
-  statusDirty = false;
+  if (statusDirty) {
+    if (statusCharacteristic) {
+      statusCharacteristic->setValue(bytes, sizeof(bytes));
+      if (snapshot().authenticated) statusCharacteristic->notify();
+    }
+    serialStatusRequested = true;
+    statusDirty = false;
+  }
+  if (serialStatusRequested && Serial.availableForWrite() >= static_cast<int>(serialStatusLength)) {
+    char line[serialStatusLength];
+    serialStatus(line, bytes);
+    Serial.write(reinterpret_cast<const uint8_t *>(line), sizeof(line));
+    serialStatusRequested = false;
+  }
 }
 
 void setup() {

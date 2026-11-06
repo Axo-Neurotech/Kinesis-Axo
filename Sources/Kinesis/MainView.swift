@@ -3,7 +3,7 @@ import SwiftUI
 import KinesisCore
 
 enum AppPage: String, CaseIterable, Identifiable {
-    case overview, gestures, band, readings, cursor, write
+    case overview, gestures, phone, stream, band, readings, cursor, write
     var id: String { rawValue }
 
     /// Pages only developer mode shows.
@@ -82,6 +82,8 @@ struct MainView: View {
                 switch page {
                 case .overview: OverviewPage(model: model)
                 case .gestures: GesturesPage(model: model)
+                case .phone: PhonePage(model: model, phone: model.phone)
+                case .stream: SensorStreamPage(model: model, stream: model.sensorStream)
                 case .band: BandPage(model: model)
                 case .readings: ReadingsPage(model: model)
                 case .cursor: CursorPage(model: model)
@@ -98,7 +100,8 @@ struct MainView: View {
 
     private var topBar: some View {
         HStack(spacing: 6) {
-            TextTabs(options: AppPage.allCases.filter { !$0.developer || model.developerMode }.map { Choice($0, $0.rawValue) }, selection: $page)
+            TextTabs(options: AppPage.allCases.filter { !$0.developer || model.developerMode }.map { Choice($0, $0.rawValue) }, selection: $page, spacing: 14)
+                .fixedSize(horizontal: true, vertical: false)
             Spacer()
             AppearanceMenu(compact: true).foregroundStyle(KinesisStyle.secondary)
             Button { model.beginSetup() } label: {

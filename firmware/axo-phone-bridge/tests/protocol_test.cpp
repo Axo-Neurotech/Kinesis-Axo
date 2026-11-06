@@ -10,7 +10,8 @@ int main() {
   assert(!decode(nullptr, sizeof(packet), command));
   assert(!decode(packet, sizeof(packet) - 1, command));
   packet[0] = 2; assert(!decode(packet, sizeof(packet), command)); packet[0] = 1;
-  packet[1] = 6; assert(!decode(packet, sizeof(packet), command)); packet[1] = key;
+  packet[1] = 8; assert(!decode(packet, sizeof(packet), command)); packet[1] = key;
+  packet[1] = 0xf0; assert(!decode(packet, sizeof(packet), command)); packet[1] = key;  // Local NUDGE is not a wire opcode.
   const uint8_t shortcutUsages[] = {0x68, 0x69};
   for (uint8_t usage : shortcutUsages) {
     packet[8] = usage; assert(decode(packet, sizeof(packet), command));
@@ -21,6 +22,27 @@ int main() {
   packet[1] = wheel; packet[8] = 0x81; packet[9] = 0x7f; assert(decode(packet, sizeof(packet), command));
   packet[8] = 0x80; assert(!decode(packet, sizeof(packet), command));
   packet[8] = 0; packet[9] = 0; assert(!decode(packet, sizeof(packet), command));
+  packet[1] = pointerMove; packet[8] = 0x81; packet[9] = 0x7f;
+  assert(decode(packet, sizeof(packet), command));
+  assert(command.opcode == pointerMove && command.first == 0x81 && command.second == 0x7f);
+  uint8_t moveReport[5] = {0xff, 0xff, 0xff, 0xff, 0xff};
+  pointerMoveReport(moveReport, command);
+  const uint8_t expectedMove[5] = {0, 0x81, 0x7f, 0, 0};
+  assert(memcmp(moveReport, expectedMove, sizeof(moveReport)) == 0); // No buttons or wheel.
+  packet[8] = 0x80; assert(!decode(packet, sizeof(packet), command));
+  packet[8] = 1; packet[9] = 0x80; assert(!decode(packet, sizeof(packet), command));
+  packet[8] = 0; packet[9] = 0; assert(!decode(packet, sizeof(packet), command));
+  packet[8] = 0; packet[9] = 1; assert(decode(packet, sizeof(packet), command));
+  packet[9] = 0;
+  packet[1] = pointerClick;
+  assert(decode(packet, sizeof(packet), command));
+  assert(command.opcode == pointerClick && command.first == 0 && command.second == 0);
+  uint8_t clickReport[5] = {0xff, 0xff, 0xff, 0xff, 0xff};
+  pointerClickReport(clickReport);
+  const uint8_t expectedClick[5] = {1, 0, 0, 0, 0};
+  assert(memcmp(clickReport, expectedClick, sizeof(clickReport)) == 0); // Left button only, no pointer/scroll movement.
+  packet[8] = 1; assert(!decode(packet, sizeof(packet), command)); packet[8] = 0;
+  packet[9] = 1; assert(!decode(packet, sizeof(packet), command)); packet[9] = 0;
   packet[1] = arm; assert(decode(packet, sizeof(packet), command));
   packet[9] = 1; assert(!decode(packet, sizeof(packet), command)); packet[9] = 0;
   packet[2] = packet[3] = 0; assert(!decode(packet, sizeof(packet), command));

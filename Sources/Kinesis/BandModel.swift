@@ -27,10 +27,45 @@ enum PairRoute: Equatable {
 @MainActor
 final class BandModel: ObservableObject {
     let dialTurns = PassthroughSubject<Double, Never>()
+    let phone: PhoneController
+    private var phoneChanges: AnyCancellable?
+    let sensorStream = SensorStreamController()
+    private var sensorStreamChanges: AnyCancellable?
+    @Published private(set) var sensorStreamError: String?
+    var sensorStreamEnabled: Bool { sensorStream.enabled }
+
+    func startSensorStream(port: UInt16 = 8766) {
+        guard !sensorStreamEnabled else { return }
+        guard !modelControlsUnavailable else {
+            sensorStreamError = "Finish the handwriting or model operation before starting the live feed."
+            return
+        }
+        sensorStreamError = nil
+        sensorStream.start(port: port, status: sensorStreamStatus, configuration: live ? readings.configuration : nil)
+        holdRawEMG("sensor-stream", true)
+        updateMotionStreams()
+        updateSensorStreamStatus()
+    }
+
+    func stopSensorStream() { sensorStream.stop() }
+
+    private var sensorStreamStatus: SensorStreamStatus {
+        SensorStreamStatus(connected: live, emgRequested: rawEMGWanted, emgActive: live && rawEMGActive,
+            hand: handConfirmed ? bandHand : nil, gyroRequested: wantedMotionStreams.gyro,
+            orientationRequested: wantedMotionStreams.orientation,
+            bandConnectionID: sensorStream.currentConnectionID, modelCaptureActive: modelCaptureStatus.active,
+            emgChanging: rawEMGChanging)
+    }
+
+    private func updateSensorStreamStatus() { sensorStream.updateStatus(sensorStreamStatus, at: clock()) }
+    var hasActiveControls: Bool { phone.selected ? phone.enabled : controlsEnabled }
+    var canEnablePhoneControls: Bool {
+        live && handConfirmed && pendingHand == nil && !showingSetup && !modelControlsUnavailable
+    }
     @Published private(set) var devices: [BandDevice] = []
     @Published private(set) var discoveredAddresses: Set<String> = []
     @Published var selectedAddress = "" {
-        didSet { saveBand(); refreshIdentity(); setAirCursorEnabled(false); loadPointerReach() }
+        didSet { phone.pause(); saveBand(); refreshIdentity(); setAirCursorEnabled(false); loadPointerReach() }
     }
     @Published private(set) var phase = "Disconnected"
     @Published private(set) var busy = false
@@ -266,6 +301,14 @@ final class BandModel: ObservableObject {
 
     private func applyRawEMG(wasWanted: Bool) {
         guard rawEMGWanted != wasWanted else { return }
+        // Model requests share the band's configuration service. Keep the desired
+        // subscription and apply it once that operation releases the service.
+        if modelCaptureStatus.active {
+            rawReconcilePending = true
+            rawEMGChanging = live
+            return
+        }
+        rawReconcilePending = false
         let deferringDisable = rawEMGChanging && !rawEMGWanted
         rawEMGError = nil
         rawEMGChanging = live
@@ -442,6 +485,7 @@ final class BandModel: ObservableObject {
     private var rateBytes = 0
     private var recorder: RawEMGRecorder?
     private var rawDisablePending = false
+    private var rawReconcilePending = false
     private var recordingTask: Task<Void, Never>?
     private var recordingID = UUID()
     private var pendingRawLines: [String] = []
@@ -521,8 +565,10 @@ final class BandModel: ObservableObject {
          clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
          cursorPacing: Double = PointerPacer.playbackSeconds,
          cursorFrames: CursorFrames = .display,
-         cursorTuning: AirPointer.Tuning = .init()) {
+         cursorTuning: AirPointer.Tuning = .init(),
+         phone: PhoneController? = nil) {
         self.clock = clock
+        self.phone = phone ?? PhoneController(defaults: defaults, clock: clock)
         cursorPacer = PointerPacer(seconds: cursorPacing)
         self.cursorFrames = cursorFrames
         airPointer.tuning = cursorTuning
@@ -620,6 +666,7 @@ final class BandModel: ObservableObject {
                 self.cancelEnrollmentScan()
                 self.live = false
                 self.suspendActions()
+                self.updateSensorStreamStatus()
                 self.connection.stop()
             }
         }
@@ -632,6 +679,13 @@ final class BandModel: ObservableObject {
                     else { self.phase = "Disconnected" }
                 }
             }
+        }
+        phoneChanges = self.phone.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        sensorStreamChanges = sensorStream.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        sensorStream.onStopped = { [weak self] in
+            guard let self else { return }
+            self.holdRawEMG("sensor-stream", false)
+            self.updateMotionStreams()
         }
     }
 
@@ -877,6 +931,10 @@ final class BandModel: ObservableObject {
     }
 
     func toggleControls() {
+        if phone.selected {
+            if phone.enabled { phone.pause() } else { enablePhoneControls() }
+            return
+        }
         if controlsEnabled { pause(); return }
         guard !modelControlsUnavailable else { return }
         guard !showingSetup, pendingHand == nil else { return }
@@ -901,6 +959,16 @@ final class BandModel: ObservableObject {
         lastAction = "Controls are paused"
     }
 
+    func enablePhoneControls() {
+        guard canEnablePhoneControls, phone.ready else { return }
+        pause()
+        cancelChatGPTDictation()
+        cancelDeferredTapActions()
+        phone.enable()
+    }
+
+    func useMacProfile() { phone.leavePhoneProfile(); pause() }
+
     func setAirCursorEnabled(_ enabled: Bool) {
         cancelChatGPTDictation()
         cancelDeferredTapActions()
@@ -920,7 +988,7 @@ final class BandModel: ObservableObject {
             switchReleased = false
             switchSecondTapUntil = nil
         }
-        guard !enabled || (canUseAirCursor && pointerCalibration == nil) else { return }
+        guard !enabled || (!phone.selected && canUseAirCursor && pointerCalibration == nil) else { return }
         guard enabled != airCursorEnabled else { return }
         if enabled { completedCursorSwitch = nil }
         airCursorEnabled = enabled
@@ -1073,6 +1141,7 @@ final class BandModel: ObservableObject {
     }
 
     private func suspendActions() {
+        phone.pause()
         setAirCursorEnabled(false)
         gate.pause()
         resetDial()
@@ -1112,10 +1181,12 @@ final class BandModel: ObservableObject {
         streamHint = nil
         charging = nil
         readings.reset()
+        sensorStream.beginConnection()
         motion.reset()
         rawEMGActive = false
         rawEMGChanging = false
         rawDisablePending = false
+        rawReconcilePending = false
         rawEMGError = nil
         rawEMGRate = 0
         rawEMGSampleRate = 0
@@ -1128,6 +1199,7 @@ final class BandModel: ObservableObject {
         router.reset()
         suspendActions()
         completedCursorSwitch = nil
+        updateSensorStreamStatus()
         do {
             try connection.start(command, onEvent: { [weak self] event in
                 self?.receive(event)
@@ -1140,6 +1212,10 @@ final class BandModel: ObservableObject {
     }
 
     private func connectionEnded(_ failure: Error?, operation: BandOperation) {
+        defer {
+            sensorStream.clearConfiguration()
+            updateSensorStreamStatus()
+        }
         if modelCaptureStatus.active {
             modelCaptureStatus = .init(phase: .finished, message: "band disconnected",
                 problem: "recording stopped; normal band mode could not be verified")
@@ -1153,6 +1229,12 @@ final class BandModel: ObservableObject {
         rawEMGActive = false
         rawEMGChanging = false
         rawDisablePending = false
+        if rawReconcilePending {
+            // The old session has ended, so the connection can safely remember
+            // the desired mode for its next session even if model cleanup failed.
+            rawReconcilePending = false
+            try? connection.setRawEMGEnabled(rawEMGWanted)
+        }
         stopRawRecording()
         // While the pair pipeline owns the flow it makes the routing
         // decisions itself; interim failures never reach the error note.
@@ -1329,10 +1411,18 @@ final class BandModel: ObservableObject {
 
     private func receive(_ event: BandEvent) {
         let now = clock()
+        // Export decoded observations before action gates, deduplication, or UI
+        // throttling. Reading a gesture never executes a mapped action.
+        if wantsConnection, !sleeping { sensorStream.receive(event) }
+        defer { updateSensorStreamStatus() }
         MotionLog.shared.record(event)
         switch event.payload {
         case .modelCaptureState(let status):
             modelCaptureStatus = status
+            if !status.active, rawReconcilePending {
+                rawReconcilePending = false
+                applyRawEMG(wasWanted: !rawEMGWanted)
+            }
             if status.phase == .finished, status.restorationVerified, let address = modelCaptureAddress {
                 do { try saveModelRecovery(modelRecoveryBands.subtracting([address])); modelCaptureAddress = nil }
                 catch { self.error = error.localizedDescription }
@@ -1397,7 +1487,9 @@ final class BandModel: ObservableObject {
             rawEMGChanging = rawEMGWanted
             if case .connect(let address) = activeOperation { recoverModelIfNeeded(address: address) }
             if controlsEnabled { gate.arm(at: now) }
-        case .disconnected: live = false; charging = nil; suspendActions()
+        case .disconnected:
+            live = false; charging = nil; suspendActions()
+            sensorStream.clearConfiguration()
         case .rawEMGFrame(let payload):
             guard wantsConnection, !sleeping else { return }
             readings.receive(payload, at: now)
@@ -1464,6 +1556,17 @@ final class BandModel: ObservableObject {
                 return
             }
             if let label = message.gestureLabel, lastGesture != label { lastGesture = label }
+            if phone.selected {
+                if let gesture = phone.receive(message, at: now) {
+                    recognizedGesture = gesture
+                    lastGesture = gesture.label
+                    if case .swipe(let direction) = gesture { lastDirection = direction } else { lastDirection = nil }
+                    gestureCount += 1
+                    totalGestureCount += 1
+                    defaults.set(totalGestureCount, forKey: "totalGestureCount")
+                }
+                return
+            }
             if !airCursorEnabled, consumeCompletedCursorSwitch(message, now: now) { return }
             if airCursorEnabled {
                 guard !cursorRepositioning else { return }
@@ -1533,6 +1636,7 @@ final class BandModel: ObservableObject {
             }
             dispatch(action, gesture: gesture)
         case .dialState(let engaged):
+            guard !phone.selected else { resetDial(); return }
             guard !airCursorEnabled, pointerCalibration == nil else { return }
             guard live, pendingHand == nil, abs(now - event.receivedAt) <= 0.35, !linkIsLate(at: now) else { resetDial(); return }
             // A pinch that turned has just ended: the release is not a tap.
@@ -1906,7 +2010,7 @@ final class BandModel: ObservableObject {
     /// calibration, and the readings page use it. The gyro stays on for the dial.
     var wantedMotionStreams: MotionStreams {
         MotionStreams(gyro: true, orientation: airCursorEnabled || pointerCalibration != nil || readingsVisible
-                          || cursorPageVisible || MotionLog.shared.isOn)
+                          || cursorPageVisible || MotionLog.shared.isOn || sensorStreamEnabled)
     }
 
     private func updateMotionStreams() {
@@ -2338,6 +2442,8 @@ final class BandModel: ObservableObject {
 
     func shutdown() async {
         quitting = true
+        stopSensorStream()
+        phone.disconnect()
         stopRawRecording()
         await recordingTask?.value
         disconnect()

@@ -34,7 +34,7 @@ extension BandModel {
     var nextAction: BandAction {
         if pairInProgress || enrollmentStage != .idle { return .pairing }
         if showsPairAction { return .pair }
-        if live { return controlsEnabled ? .pauseControls : .enableControls }
+        if live { return hasActiveControls ? .pauseControls : .enableControls }
         // Winding down after a disconnect is not connecting.
         if busy && !wantsConnection { return .disconnecting }
         if wantsConnection || busy { return .connecting }
