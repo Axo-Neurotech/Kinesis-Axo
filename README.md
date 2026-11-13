@@ -1,19 +1,6 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="design/kinesis-links-dark.svg">
-  <img src="design/kinesis-links.svg" width="80" alt="kinesis">
-</picture>
-
 # kinesis
 
 use your meta neural band to control your mac
-
-
-
-
-https://github.com/user-attachments/assets/43ed6094-5c66-4992-aacd-e010dae3f4fa
-
-
-
 
 
 swipe between desktops, open mission control, control your music, and pinch + turn for volume or brightness. pick your own mappings, practice in setup, then keep it in the menu bar.
